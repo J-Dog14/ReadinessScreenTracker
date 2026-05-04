@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% set active_page = 'maintenance' %}
+{% block title %}Maintenance — Readiness Screen Tracker{% endblock %}
+{% block header_right %}<span class="text-muted">Ingest readiness screen data → score</span>{% endblock %}
+
+{% block content %}
+<h1>Readiness Screen — Maintenance</h1>
+<p class="text-muted" style="margin-top:0;">
+  Point at an Output Files folder. The app parses the six movement txt files,
+  resolves athletes against <code>analytics.d_athletes</code>, upserts into
+  the existing <code>f_readiness_screen_*</code> tables, runs power-curve
+  analysis on any matching <code>*_Power.txt</code> files, and computes the
+  composite readiness score.
+</p>
+
+<!-- ─── Athlete picker ──────────────────────────────────────────────────── -->
+<section class="card">
+  <h2>1. Athlete</h2>
+  <div class="chip-group" id="mode-chips" style="margin-bottom: 0.85rem;">
+    <div class="chip is-active" data-mode="auto">Auto-detect (from files)</div>
+    <div class="chip"           data-mode="existing">Existing athlete</div>
+  </div>
+
+  <div id="auto-msg" class="text-muted" style="font-size: 0.88rem;">
+    The athlete and session date will be extracted from the first line of
+    each movement file (matches the backend reader).
+  </div>
+
+  <div id="existing-picker" style="display:none;">
+    <label class="field-label">Search athletes</label>
+    <div class="search-dropdown">
+      <input id="athlete-search" class="input" type="text" placeholder="Type a name…" autocomplete="off">
+      <div id="athlete-results" class="results" style="display:none;"></div>
+    </div>
+    <div id="athlete-selected" class="text-muted" style="margin-top:0.5rem; font-size: 0.85rem;"></div>
+  </div>
+</section>
+
+<!-- ─── Folder + scan ───────────────────────────────────────────────────── -->
+<section class="card">
+  <h2>2. Output files folder</h2>
+  <div class="row">
+    <div class="col">
+      <label class="field-label">Folder path</label>
+      <input id="output-dir" class="input mono" type="text" value="{{ default_output_dir }}">
+    </div>
+    <div style="align-self:flex-end;">
+      <button id="scan-btn" class="btn btn-ghost">Scan folder</button>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:0.75rem;">
+    <div class="col" style="max-width: 380px;">
+      <label class="field-label">Power.txt folder (CMJ/PPU curves)</label>
+      <input id="power-dir" class="input mono" type="text" value="{{ default_power_dir }}">
+    </div>
+    <div class="col" style="max-width: 180px;">
+      <label class="field-label">Sample rate (Hz)</label>
+      <input id="fs-hz" class="input mono" type="number" step="1" min="1" value="{{ default_fs_hz }}">
+    </div>
+  </div>
+
+  <h3 style="margin-top:1rem;">Discovered files</h3>
+  <div id="file-grid" class="file-grid">
+    {% for movement, fname in ascii_files.items() %}
+    <div class="file-tile missing" data-movement="{{ movement }}">
+      <span class="label">{{ movement }}</span>
+      <span class="name">{{ fname }}</span>
+      <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<!-- ─── Run ─────────────────────────────────────────────────────────────── -->
+<section class="card">
+  <div class="row" style="align-items:center; justify-content:space-between;">
+    <div>
+      <h2 style="margin-bottom: 0.25rem;">3. Run ingestion</h2>
+      <div class="text-muted" style="font-size:0.88rem;">Parses → upserts fact rows → analyzes power curves → computes score.</div>
+    </div>
+    <div class="row tight">
+      <button id="kill-btn" class="btn btn-danger" style="display:none;">Stop</button>
+      <button id="run-btn"  class="btn btn-primary">Run</button>
+    </div>
+  </div>
+
+  <div id="progress" class="text-muted" style="margin-top: 0.75rem; font-size: 0.88rem; display:none;">
+    <span class="dot gray"></span><span id="progress-label">Idle</span>
+  </div>
+
+  <div class="terminal" id="terminal" style="margin-top: 0.75rem; display:none;"></div>
+
+  <div id="result-summary" style="margin-top: 0.75rem; display:none;"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/maintenance.js') }}"></script>
+{% endblock %}

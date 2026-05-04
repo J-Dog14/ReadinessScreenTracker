@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% set active_page = 'dashboard' %}
+{% block title %}Dashboard — Readiness Screen Tracker{% endblock %}
+{% block header_right %}<span class="text-muted">Daily readiness · trends · power curve</span>{% endblock %}
+
+{% block head %}
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="row" style="align-items:flex-end; margin-bottom: 1rem; gap: 1rem;">
+  <div class="col" style="max-width: 420px;">
+    <label class="field-label">Athlete</label>
+    <select id="athlete-select" class="input">
+      {% if not athletes %}
+        <option value="">No athletes with readiness data yet — run an ingestion first.</option>
+      {% endif %}
+      {% for a in athletes %}
+        <option value="{{ a.athlete_uuid }}" {% if a.athlete_uuid == selected_uuid %}selected{% endif %}>
+          {{ a.name }}{% if a.age_group %} — {{ a.age_group }}{% endif %}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="text-muted" style="font-size: 0.85rem;">
+    Composite z-score against the athlete's own rolling 28-day baseline.
+  </div>
+</div>
+
+<!-- Row 0: Score gauge + sub-scores + score history -->
+<section class="card" id="score-card">
+  <div class="row" style="gap: 2rem; align-items: center;">
+    <div class="score-gauge" id="score-gauge">
+      <svg viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="84" fill="none" stroke="var(--border)" stroke-width="14"/>
+        <circle id="gauge-arc" cx="100" cy="100" r="84" fill="none" stroke="var(--accent)" stroke-width="14"
+                stroke-dasharray="0 528" stroke-dashoffset="0" stroke-linecap="round"
+                transform="rotate(-90 100 100)"/>
+      </svg>
+      <div class="gauge-num" id="gauge-num">—</div>
+      <div class="gauge-band" id="gauge-band">No score yet</div>
+    </div>
+
+    <div class="col">
+      <h2 style="margin-bottom: 0.5rem;">Composite readiness</h2>
+      <div class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
+        Score = clip(50 + 15 × mean z, 0..100). Bands: ≥60 READY · 40–60 CAUTION · &lt;40 FATIGUED.
+      </div>
+      <div class="stat-grid" id="sub-stats"></div>
+    </div>
+  </div>
+
+  <div id="score-history" style="margin-top: 1rem; height: 220px;"></div>
+</section>
+
+<!-- Row 1: Isometric -->
+<section class="card">
+  <h2>Isometric (I / Y / T / IR90) — Avg Force</h2>
+  <div id="iso-plot" style="height: 320px;"></div>
+  <div class="stat-grid" id="iso-stats" style="margin-top: 0.75rem;"></div>
+</section>
+
+<!-- Row 2: CMJ -->
+<section class="card">
+  <h2>Countermovement Jump</h2>
+  <div class="row" style="gap: 1rem;">
+    <div class="col" style="min-width: 360px;"><div id="cmj-jh-plot"  style="height: 280px;"></div></div>
+    <div class="col" style="min-width: 360px;"><div id="cmj-fv-plot"  style="height: 280px;"></div></div>
+  </div>
+  <div class="stat-grid" id="cmj-stats" style="margin-top: 0.75rem;"></div>
+</section>
+
+<!-- Row 3: PPU -->
+<section class="card">
+  <h2>Plyo Push-Up</h2>
+  <div class="row" style="gap: 1rem;">
+    <div class="col" style="min-width: 360px;"><div id="ppu-jh-plot"  style="height: 280px;"></div></div>
+    <div class="col" style="min-width: 360px;"><div id="ppu-fv-plot"  style="height: 280px;"></div></div>
+  </div>
+  <div class="stat-grid" id="ppu-stats" style="margin-top: 0.75rem;"></div>
+</section>
+
+<!-- Row 4: Power-curve trends -->
+<section class="card">
+  <h2>Power-curve trends</h2>
+  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">
+    Derived from each session's raw power-time signal. Higher peak / RPD / rise-slope / AUC and lower rise time → better neuromuscular state.
+  </p>
+  <div id="power-plot" style="height: 320px;"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.__INITIAL_UUID__ = {{ selected_uuid|tojson }};
+</script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Readiness Screen Tracker{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="app-header">
+    <span class="brand">Readiness Screen Tracker</span>
+    <nav style="display:flex; gap:0.25rem;">
+      <a class="nav-link {% if active_page == 'maintenance' %}active{% endif %}" href="{{ url_for('maintenance.page') }}">Maintenance</a>
+      <a class="nav-link {% if active_page == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard.page') }}">Dashboard</a>
+    </nav>
+    <div style="margin-left:auto; color: var(--text-muted); font-size: 0.85rem;">
+      {% block header_right %}{% endblock %}
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

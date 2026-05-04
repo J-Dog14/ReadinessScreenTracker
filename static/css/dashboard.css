@@ -1,0 +1,19 @@
+/* Plotly dark-theme overrides + a few dashboard-specific tweaks. */
+
+.js-plotly-plot, .plot-container {
+    background: transparent !important;
+}
+
+#score-card {
+    background: linear-gradient(135deg, var(--bg-secondary) 0%, #1f2a3d 100%);
+    border-color: rgba(44, 153, 212, 0.25);
+}
+
+.score-gauge.band-ready  #gauge-arc { stroke: var(--accent-green); }
+.score-gauge.band-caution #gauge-arc { stroke: var(--accent-yellow); }
+.score-gauge.band-fatigued #gauge-arc { stroke: var(--accent-red); }
+.score-gauge.band-insufficient #gauge-arc { stroke: var(--text-muted); }
+
+.score-gauge.band-ready    .gauge-band { color: #4ade80; }
+.score-gauge.band-caution  .gauge-band { color: #facc15; }
+.score-gauge.band-fatigued .gauge-band { color: #f87171; }

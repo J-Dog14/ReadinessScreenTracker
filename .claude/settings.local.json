@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Joey\\\\PycharmProjects\\\\Readiness Screen Tracker\" -Recurse -Force)",
+      "Bash(Select-Object -First 50)",
+      "Bash(Format-Table -Property FullName)"
+    ]
+  }
+}
