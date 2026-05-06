@@ -3,7 +3,12 @@
     "allow": [
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Joey\\\\PycharmProjects\\\\Readiness Screen Tracker\" -Recurse -Force)",
       "Bash(Select-Object -First 50)",
-      "Bash(Format-Table -Property FullName)"
+      "Bash(Format-Table -Property FullName)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Joey\\\\PycharmProjects\\\\Readiness Screen Tracker\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Joey\\\\PycharmProjects\\\\OctaneBiomechBackend\\\\uais\\\\python\\\\readinessScreen\" -Recurse -Force)",
+      "Bash(Select-Object -Property FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)"
     ]
   }
 }

@@ -149,22 +149,26 @@ def get_or_create_athlete(
         existing = find_existing_athlete(conn, normalized)
         if existing:
             return str(existing["athlete_uuid"]), False
+        raise ValueError(
+            f"Athlete '{display_name}' not found in analytics.d_athletes. "
+            "This app does not create new athletes — ensure the athlete exists in the backend first."
+        )
+    finally:
+        conn.close()
 
-        new_uuid = str(uuid_pkg.uuid4())
+
+def update_athlete_data_flag(athlete_uuid: str) -> None:
+    """Set has_readiness_screen_data = TRUE in d_athletes (mirrors backend's update_athlete_data_flag)."""
+    conn = get_connection()
+    try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO analytics.d_athletes (
-                    athlete_uuid, name, normalized_name,
-                    gender, source_system, source_athlete_id
-                ) VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (athlete_uuid) DO NOTHING
-                """,
-                (new_uuid, display_name, normalized, gender, source_system, source_athlete_id),
+                "UPDATE analytics.d_athletes "
+                "SET has_readiness_screen_data = TRUE, updated_at = NOW() "
+                "WHERE athlete_uuid = %s",
+                (athlete_uuid,),
             )
         conn.commit()
-        log.info("Created athlete %s (%s)", display_name, new_uuid)
-        return new_uuid, True
     finally:
         conn.close()
 

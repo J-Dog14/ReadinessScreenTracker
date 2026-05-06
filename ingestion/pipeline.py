@@ -34,6 +34,7 @@ from .athlete_manager import (
     get_athlete_dob,
     get_or_create_athlete,
     update_athlete_age_group,
+    update_athlete_data_flag,
 )
 from .file_parsers import (
     ASCII_FILES,
@@ -138,21 +139,17 @@ def run_ingestion(
                 # Resolve athlete UUID.
                 if athlete_uuid_override:
                     athlete_uuid = athlete_uuid_override
-                    created = False
                 else:
-                    athlete_uuid, created = get_or_create_athlete(
+                    athlete_uuid, _ = get_or_create_athlete(
                         name=name,
                         source_system="readiness_screen",
                         source_athlete_id=extract_source_athlete_id(name),
                         gender=session_gender,
                     )
+                update_athlete_data_flag(athlete_uuid)
                 if athlete_uuid not in athletes_meta:
                     athletes_meta[athlete_uuid] = name
-                    _emit(
-                        log,
-                        "athlete",
-                        f"  {name} -> {athlete_uuid} ({'NEW' if created else 'matched'})",
-                    )
+                    _emit(log, "athlete", f"  {name} -> {athlete_uuid} (matched)")
 
                 # Age + age_group at session.
                 age_at_collection = None
