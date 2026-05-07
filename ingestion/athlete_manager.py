@@ -233,6 +233,27 @@ def list_athletes_with_readiness():
         conn.close()
 
 
+def call_update_athlete_data_flags() -> None:
+    """Call the warehouse stored procedure that refreshes all has_*_data boolean flags on d_athletes.
+
+    Mirrors the backend's update_athlete_flags() call in common/athlete_manager.py.
+    Fails silently if the stored procedure doesn't exist yet (backward-compatible).
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT update_athlete_data_flags()")
+        conn.commit()
+    except Exception as e:
+        log.warning("update_athlete_data_flags() stored procedure unavailable: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+
 def search_athletes(query: str, limit: int = 25):
     """Substring search for the maintenance page's existing-athlete picker."""
     conn = get_connection()

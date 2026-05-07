@@ -109,6 +109,7 @@ def run():
                 fs_hz=fs_hz,
                 log=log,
                 athlete_uuid_override=athlete_uuid,
+                cancel_event=job.cancelled,
             )
             job.summary = summary
         except Exception as e:

@@ -2,24 +2,23 @@
 End-to-end ingestion pipeline.
 
 Given an Output Files folder:
-  1. Parse the six readiness movement txt files (CMJ, PPU, I, Y, T, IR90).
-  2. Resolve / create the athlete UUID against analytics.d_athletes.
-  3. Upsert rows into the existing f_readiness_screen_<movement> fact tables.
-     (Same UPSERT pattern the backend uses — check exists, then UPDATE or INSERT.)
-  4. For CMJ + PPU, walk the matching *_Power.txt files and persist curve
-     metrics into f_readiness_screen_power_curve.
-  5. Compute the composite readiness score and persist to f_readiness_screen_score.
-
-Each stage prints to stdout with a uniform `[stage] message` prefix so the
-maintenance page's SSE stream can render a tidy log.
-
-Designed to be safe to re-run: existing rows are updated, not duplicated.
+  1. Parse the four ISO movement txt files (I, Y, T, IR90) — static filenames.
+  2. Parse CMJ/PPU trial files (CMJ1.txt, CMJ2.txt, PPU1.txt, …) — Athletic Screen format.
+     For each trial:
+       a. Parse 5-column summary data.
+       b. Load matching *_Power.txt and run full power-curve analysis.
+       c. Upsert row into f_readiness_screen_{cmj|ppu} with inline power metrics.
+       d. Persist curve metrics to f_readiness_screen_power_curve (scoring reads from there).
+  3. Resolve athlete UUIDs — match-only, never create.
+  4. Update has_readiness_screen_data flag in d_athletes.
+  5. Compute composite readiness score.
 """
 from __future__ import annotations
 
 import os
+import re
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from typing import Callable, Dict, List, Optional
 
 from db.connection import get_connection
@@ -30,6 +29,7 @@ from .age_utils import (
     parse_date,
 )
 from .athlete_manager import (
+    call_update_athlete_data_flags,
     extract_source_athlete_id,
     get_athlete_dob,
     get_or_create_athlete,
@@ -39,29 +39,56 @@ from .athlete_manager import (
 from .file_parsers import (
     ASCII_FILES,
     discover_txt_files,
+    discover_cmj_ppu_trials,
     find_session_xml,
     normalize_gender,
     parse_session_xml,
     parse_txt_file,
+    peek_file_date,
 )
-from .power_analysis import analyze_session_power_files
+from .power_analysis import analyze_power_curve_advanced, load_power_txt
 from .scoring import score_session
 
 
-# Existing fact tables; mapped from movement_type. We do not modify their
-# schema — we only INSERT/UPDATE rows with the same columns the backend uses.
-MOVEMENT_TO_TABLE = {
+# Fact tables for the four ISO movements.
+ISO_TABLE = {
     "I":    "f_readiness_screen_i",
     "Y":    "f_readiness_screen_y",
     "T":    "f_readiness_screen_t",
     "IR90": "f_readiness_screen_ir90",
-    "CMJ":  "f_readiness_screen_cmj",
-    "PPU":  "f_readiness_screen_ppu",
 }
+
+CMJ_PPU_TABLE = {
+    "CMJ": "f_readiness_screen_cmj",
+    "PPU": "f_readiness_screen_ppu",
+}
+
+# All power-curve columns written inline into the CMJ/PPU fact table.
+POWER_CURVE_COLS = [
+    "peak_power_w", "time_to_peak_s", "rpd_max_w_per_s", "time_to_rpd_max_s",
+    "rise_time_10_90_s", "fwhm_s", "auc_j", "work_early_pct", "decay_90_10_s",
+    "t_com_norm_0to1", "skewness", "kurtosis", "spectral_centroid_hz",
+]
 
 
 def _emit(log: Callable[[str], None], stage: str, msg: str) -> None:
     log(f"[{stage}] {msg}")
+
+
+def _safe(v):
+    """Convert numpy scalars / NaN to plain Python types for psycopg2."""
+    if v is None:
+        return None
+    try:
+        import math
+        import numpy as np
+        if isinstance(v, (np.integer, np.floating)):
+            v = v.item()
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except ImportError:
+        pass
+    return v
 
 
 def run_ingestion(
@@ -70,23 +97,18 @@ def run_ingestion(
     fs_hz: float = 1000.0,
     log: Callable[[str], None] = print,
     athlete_uuid_override: Optional[str] = None,
+    cancel_event=None,
 ) -> Dict:
-    """
-    Run the full pipeline against `output_dir`. If `athlete_uuid_override` is
-    provided (Existing Athlete flow), all data is attributed to that UUID — no
-    new athletes are created.
-
-    Returns a summary dict the maintenance page can render.
-    """
+    """Run the full pipeline against `output_dir`."""
     summary: Dict = {
-        "output_dir":      output_dir,
-        "files_found":     {},
-        "rows_inserted":   0,
-        "rows_updated":    0,
-        "athletes":        [],
+        "output_dir":       output_dir,
+        "files_found":      {},
+        "rows_inserted":    0,
+        "rows_updated":     0,
+        "athletes":         [],
         "power_curve_rows": 0,
-        "scores":          [],
-        "errors":          [],
+        "scores":           [],
+        "errors":           [],
     }
 
     if power_dir is None:
@@ -98,17 +120,45 @@ def run_ingestion(
         summary["errors"].append(msg)
         return summary
 
-    _emit(log, "scan", f"Scanning {output_dir}")
-    txt_files = discover_txt_files(output_dir)
-    summary["files_found"] = {m: os.path.basename(p) for m, p in txt_files.items()}
-    if not txt_files:
+    # ---- Discover files -----------------------------------------------
+    iso_files = discover_txt_files(output_dir)
+    cmj_ppu_trials = discover_cmj_ppu_trials(output_dir)
+
+    summary["files_found"] = {
+        **{m: os.path.basename(p) for m, p in iso_files.items()},
+        **{t["trial_name"]: os.path.basename(t["file_path"]) for t in cmj_ppu_trials},
+    }
+
+    if not iso_files and not cmj_ppu_trials:
         _emit(log, "scan", "No movement files found. Nothing to do.")
         return summary
 
-    for movement, path in txt_files.items():
-        _emit(log, "scan", f"  found {movement} -> {os.path.basename(path)}")
+    _emit(log, "scan", f"Scanning {output_dir}")
+    for m, p in iso_files.items():
+        _emit(log, "scan", f"  found {m} -> {os.path.basename(p)}")
+    for t in cmj_ppu_trials:
+        _emit(log, "scan", f"  found {t['movement_type']} trial -> {os.path.basename(t['file_path'])}")
 
-    # Session.xml — used to default gender and (eventually) verify name.
+    # ---- Date filtering --------------------------------------------------
+    # Peek line 0 of every discovered file to collect session dates cheaply.
+    all_file_dates: Dict[str, Optional[str]] = {}
+    for _fp in list(iso_files.values()) + [t["file_path"] for t in cmj_ppu_trials]:
+        all_file_dates[_fp] = peek_file_date(_fp)
+
+    unique_dates = {d for d in all_file_dates.values() if d}
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    if today_str in unique_dates:
+        target_date = today_str
+        _emit(log, "filter", f"Today's date {target_date} found — processing only today's files")
+    elif unique_dates:
+        target_date = max(unique_dates)
+        _emit(log, "filter", f"No files from today — processing most recent date: {target_date}")
+    else:
+        target_date = None
+        _emit(log, "filter", "Could not determine any date from files — processing all")
+
+    # Session.xml — used to default gender.
     session_gender = "Male"
     xml_path = find_session_xml(output_dir)
     if xml_path:
@@ -119,14 +169,26 @@ def run_ingestion(
         except Exception as e:
             _emit(log, "session", f"Could not parse Session.xml ({e}); defaulting gender=Male")
 
-    # Track unique (athlete, date) pairs across the run so we score each once.
-    sessions_seen = set()
+    sessions_seen: set = set()
     athletes_meta: Dict[str, str] = {}  # uuid -> display name
 
     conn = get_connection()
     try:
-        for movement, file_path in txt_files.items():
+        # ================================================================
+        # Part 1: ISO movements (I, Y, T, IR90) — unchanged logic
+        # ================================================================
+        for movement, file_path in iso_files.items():
             try:
+                if cancel_event and cancel_event.is_set():
+                    _emit(log, "cancelled", "Run cancelled by user.")
+                    break
+
+                file_date = all_file_dates.get(file_path)
+                if target_date is not None and file_date != target_date:
+                    _emit(log, "skip",
+                          f"{os.path.basename(file_path)}: date {file_date} does not match target {target_date}")
+                    continue
+
                 parsed = parse_txt_file(file_path, movement)
                 if not parsed:
                     _emit(log, "parse", f"  {movement}: failed to parse {os.path.basename(file_path)}")
@@ -136,109 +198,45 @@ def run_ingestion(
                 name = parsed["name"]
                 date_str = parsed["date"]
 
-                # Resolve athlete UUID.
-                if athlete_uuid_override:
-                    athlete_uuid = athlete_uuid_override
-                else:
-                    athlete_uuid, _ = get_or_create_athlete(
-                        name=name,
-                        source_system="readiness_screen",
-                        source_athlete_id=extract_source_athlete_id(name),
-                        gender=session_gender,
-                    )
+                athlete_uuid, date_str = _resolve_athlete(
+                    name, date_str, athlete_uuid_override, session_gender,
+                    athletes_meta, log, summary,
+                )
+                if athlete_uuid is None:
+                    continue
+
                 update_athlete_data_flag(athlete_uuid)
-                if athlete_uuid not in athletes_meta:
-                    athletes_meta[athlete_uuid] = name
-                    _emit(log, "athlete", f"  {name} -> {athlete_uuid} (matched)")
 
-                # Age + age_group at session.
-                age_at_collection = None
-                age_group = None
-                dob = get_athlete_dob(athlete_uuid)
-                try:
-                    session_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                    session_date = normalize_session_date(session_date) or session_date
-                    date_str = session_date.strftime("%Y-%m-%d")
-                    if dob:
-                        dob_date = dob if hasattr(dob, "year") else parse_date(str(dob))
-                        if dob_date:
-                            age_at_collection = calculate_age_at_collection(session_date, dob_date)
-                            if age_at_collection is not None and not (0 <= age_at_collection <= 120):
-                                age_at_collection = None
-                            age_group = calculate_age_group(age_at_collection)
-                except Exception:
-                    pass
+                age_at_collection, age_group, date_str = _calc_age(athlete_uuid, date_str)
 
-                table = MOVEMENT_TO_TABLE[movement]
+                table = ISO_TABLE[movement]
                 src_id = extract_source_athlete_id(name)
 
-                if movement in ("CMJ", "PPU"):
-                    insert_data = {
-                        "athlete_uuid":      athlete_uuid,
-                        "session_date":      date_str,
-                        "source_system":     "readiness_screen",
-                        "source_athlete_id": src_id,
-                        "age_at_collection": age_at_collection,
-                        "age_group":         age_group,
-                        "jump_height":       parsed.get("JH_IN"),
-                        "peak_power":        parsed.get("LEWIS_PEAK_POWER"),
-                        "peak_force":        parsed.get("Max_Force"),
-                        "pp_w_per_kg":       parsed.get("PP_W_per_kg"),
-                        "pp_forceplate":     parsed.get("PP_FORCEPLATE"),
-                        "force_at_pp":       parsed.get("Force_at_PP"),
-                        "vel_at_pp":         parsed.get("Vel_at_PP"),
-                    }
-                    update_cols = [
-                        "jump_height", "peak_power", "peak_force", "pp_w_per_kg",
-                        "pp_forceplate", "force_at_pp", "vel_at_pp",
-                        "age_at_collection", "age_group",
-                    ]
+                insert_data = {
+                    "athlete_uuid":      athlete_uuid,
+                    "session_date":      date_str,
+                    "source_system":     "readiness_screen",
+                    "source_athlete_id": src_id,
+                    "age_at_collection": age_at_collection,
+                    "age_group":         age_group,
+                    "avg_force":         parsed.get("Avg_Force"),
+                    "avg_force_norm":    parsed.get("Avg_Force_Norm"),
+                    "max_force":         parsed.get("Max_Force"),
+                    "max_force_norm":    parsed.get("Max_Force_Norm"),
+                    "time_to_max":       parsed.get("Time_to_Max"),
+                }
+                update_cols = [
+                    "avg_force", "avg_force_norm", "max_force", "max_force_norm",
+                    "time_to_max", "age_at_collection", "age_group",
+                ]
+
+                verb = _upsert(conn, table, insert_data, update_cols,
+                               "athlete_uuid = %s AND session_date = %s",
+                               (athlete_uuid, date_str))
+                if verb == "inserted":
+                    summary["rows_inserted"] += 1
                 else:
-                    insert_data = {
-                        "athlete_uuid":      athlete_uuid,
-                        "session_date":      date_str,
-                        "source_system":     "readiness_screen",
-                        "source_athlete_id": src_id,
-                        "age_at_collection": age_at_collection,
-                        "age_group":         age_group,
-                        "avg_force":         parsed.get("Avg_Force"),
-                        "avg_force_norm":    parsed.get("Avg_Force_Norm"),
-                        "max_force":         parsed.get("Max_Force"),
-                        "max_force_norm":    parsed.get("Max_Force_Norm"),
-                        "time_to_max":       parsed.get("Time_to_Max"),
-                    }
-                    update_cols = [
-                        "avg_force", "avg_force_norm", "max_force", "max_force_norm",
-                        "time_to_max", "age_at_collection", "age_group",
-                    ]
-
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"SELECT 1 FROM public.{table} WHERE athlete_uuid = %s AND session_date = %s LIMIT 1",
-                        (athlete_uuid, date_str),
-                    )
-                    exists = cur.fetchone() is not None
-
-                    if exists:
-                        set_clause = ", ".join(f"{c} = %s" for c in update_cols)
-                        params = [insert_data[c] for c in update_cols] + [athlete_uuid, date_str]
-                        cur.execute(
-                            f"UPDATE public.{table} SET {set_clause} "
-                            f"WHERE athlete_uuid = %s AND session_date = %s",
-                            params,
-                        )
-                        summary["rows_updated"] += 1
-                        verb = "updated"
-                    else:
-                        cols = list(insert_data.keys())
-                        placeholders = ", ".join(["%s"] * len(cols))
-                        cur.execute(
-                            f"INSERT INTO public.{table} ({', '.join(cols)}) VALUES ({placeholders})",
-                            [insert_data[c] for c in cols],
-                        )
-                        summary["rows_inserted"] += 1
-                        verb = "inserted"
-                conn.commit()
+                    summary["rows_updated"] += 1
 
                 update_athlete_age_group(athlete_uuid, age_group)
                 _emit(log, "upsert", f"  {table}: {verb} {date_str}")
@@ -249,36 +247,126 @@ def run_ingestion(
                 msg = f"{movement} ({os.path.basename(file_path)}): {e}"
                 _emit(log, "ERROR", msg)
                 summary["errors"].append(msg)
-    finally:
-        conn.close()
 
-    # ---- Power-curve analysis (CMJ, PPU) -----------------------------------
-    if sessions_seen:
-        _emit(log, "power", f"Looking for *_Power.txt files in {power_dir}")
-        for movement in ("CMJ", "PPU"):
+        # ================================================================
+        # Part 2: CMJ/PPU trials — Athletic Screen style
+        # ================================================================
+        for trial in cmj_ppu_trials:
+            movement   = trial["movement_type"]
+            trial_name = trial["trial_name"]
+            file_path  = trial["file_path"]
             try:
-                results = analyze_session_power_files(power_dir, movement, fs_hz=fs_hz)
+                if cancel_event and cancel_event.is_set():
+                    _emit(log, "cancelled", "Run cancelled by user.")
+                    break
+
+                file_date = all_file_dates.get(file_path)
+                if target_date is not None and file_date != target_date:
+                    _emit(log, "skip",
+                          f"{os.path.basename(file_path)}: date {file_date} does not match target {target_date}")
+                    continue
+
+                parsed = parse_txt_file(file_path, movement, folder_path=output_dir)
+                if not parsed:
+                    _emit(log, "parse", f"  {trial_name}: failed to parse {os.path.basename(file_path)}")
+                    summary["errors"].append(f"parse failed: {file_path}")
+                    continue
+
+                name     = parsed["name"]
+                date_str = parsed["date"]
+
+                athlete_uuid, date_str = _resolve_athlete(
+                    name, date_str, athlete_uuid_override, session_gender,
+                    athletes_meta, log, summary,
+                )
+                if athlete_uuid is None:
+                    continue
+
+                update_athlete_data_flag(athlete_uuid)
+
+                age_at_collection, age_group, date_str = _calc_age(athlete_uuid, date_str)
+
+                # Load and analyse the matching Power.txt file.
+                power_metrics: Dict = {}
+                power_file = os.path.join(output_dir, f"{trial_name}_Power.txt")
+                if os.path.isfile(power_file):
+                    try:
+                        pw_arr = load_power_txt(power_file)
+                        pa = analyze_power_curve_advanced(pw_arr, fs_hz=fs_hz)
+                        power_metrics = {k: _safe(pa.get(k)) for k in POWER_CURVE_COLS}
+                        _emit(log, "power", f"  {trial_name}: power curve analysed ({len(pw_arr)} samples)")
+                    except Exception as pe:
+                        _emit(log, "power", f"  {trial_name}: power analysis failed ({pe})")
+                else:
+                    _emit(log, "power", f"  {trial_name}: no Power.txt found — skipping curve")
+
+                table  = CMJ_PPU_TABLE[movement]
+                src_id = extract_source_athlete_id(name)
+
+                insert_data = {
+                    "athlete_uuid":      athlete_uuid,
+                    "session_date":      date_str,
+                    "source_system":     "readiness_screen",
+                    "source_athlete_id": src_id,
+                    "trial_name":        trial_name,
+                    "age_at_collection": age_at_collection,
+                    "age_group":         age_group,
+                    "jump_height":       _safe(parsed.get("JH_IN")),
+                    "peak_power":        _safe(parsed.get("Peak_Power")),
+                    "peak_force":        None,
+                    "pp_w_per_kg":       _safe(parsed.get("PP_W_per_kg")),
+                    "pp_forceplate":     _safe(parsed.get("PP_FORCEPLATE")),
+                    "force_at_pp":       _safe(parsed.get("Force_at_PP")),
+                    "vel_at_pp":         _safe(parsed.get("Vel_at_PP")),
+                    **power_metrics,
+                }
+                update_cols = [
+                    "jump_height", "peak_power", "peak_force",
+                    "pp_w_per_kg", "pp_forceplate", "force_at_pp", "vel_at_pp",
+                    "age_at_collection", "age_group",
+                    *POWER_CURVE_COLS,
+                ]
+                # Only update columns that exist in insert_data.
+                update_cols = [c for c in update_cols if c in insert_data]
+
+                verb = _upsert(
+                    conn, table, insert_data, update_cols,
+                    "athlete_uuid = %s AND session_date = %s AND trial_name = %s",
+                    (athlete_uuid, date_str, trial_name),
+                )
+                if verb == "inserted":
+                    summary["rows_inserted"] += 1
+                else:
+                    summary["rows_updated"] += 1
+
+                update_athlete_age_group(athlete_uuid, age_group)
+                _emit(log, "upsert", f"  {table}: {verb} {date_str} (trial={trial_name})")
+                sessions_seen.add((athlete_uuid, date_str))
+
+                # Also write to f_readiness_screen_power_curve (scoring reads from it).
+                if power_metrics:
+                    trial_id = _trial_id_from_name(trial_name)
+                    m_full = {**power_metrics}
+                    # analyze_power_curve_advanced returns more keys than POWER_CURVE_COLS;
+                    # _persist_power_curve needs source_file and fs_hz as well.
+                    try:
+                        pw_arr_full = load_power_txt(power_file)
+                        pa_full = analyze_power_curve_advanced(pw_arr_full, fs_hz=fs_hz)
+                        pa_full["source_file"] = power_file
+                        pa_full["fs_hz"] = fs_hz
+                        _persist_power_curve(athlete_uuid, date_str, movement, trial_id, pa_full)
+                        summary["power_curve_rows"] += 1
+                    except Exception as pce:
+                        _emit(log, "power", f"  {trial_name}: power_curve table write failed ({pce})")
+
             except Exception as e:
-                msg = f"power analysis {movement}: {e}"
+                conn.rollback()
+                msg = f"{trial_name} ({os.path.basename(file_path)}): {e}"
                 _emit(log, "ERROR", msg)
                 summary["errors"].append(msg)
-                continue
 
-            if not results:
-                _emit(log, "power", f"  {movement}: no power.txt files found")
-                continue
-
-            # Attribute to each (athlete_uuid, date) we just upserted for this movement.
-            # In practice CMJ/PPU map 1:1 with a single (athlete, date) per run, but we
-            # write a row per power file (trial).
-            for (athlete_uuid, date_str) in sessions_seen:
-                for trial_idx, m in enumerate(results, start=1):
-                    if "error" in m:
-                        _emit(log, "power", f"  {movement} skipped {os.path.basename(m['source_file'])}: {m['error']}")
-                        continue
-                    _persist_power_curve(athlete_uuid, date_str, movement, trial_idx, m)
-                    summary["power_curve_rows"] += 1
-                _emit(log, "power", f"  {movement}: persisted {len(results)} curve rows for {date_str}")
+    finally:
+        conn.close()
 
     # ---- Composite score ---------------------------------------------------
     for (athlete_uuid, date_str) in sessions_seen:
@@ -291,25 +379,127 @@ def run_ingestion(
                 "session_date": date_str,
                 **score,
             })
-            band = score.get("band")
-            comp = score.get("composite_score")
-            _emit(log, "score", f"  {athletes_meta.get(athlete_uuid, athlete_uuid)} {date_str}: {band} ({comp})")
+            _emit(log, "score",
+                  f"  {athletes_meta.get(athlete_uuid, athlete_uuid)} {date_str}: "
+                  f"{score.get('band')} ({score.get('composite_score')})")
         except Exception as e:
             msg = f"score {athlete_uuid} {date_str}: {e}"
             _emit(log, "ERROR", msg)
             summary["errors"].append(msg)
 
+    # Refresh all has_*_data boolean flags on d_athletes via warehouse stored procedure.
+    if sessions_seen and not (cancel_event and cancel_event.is_set()):
+        try:
+            call_update_athlete_data_flags()
+            _emit(log, "flags", "Athlete data flags refreshed")
+        except Exception as e:
+            _emit(log, "flags", f"Flag refresh skipped: {e}")
+
     summary["athletes"] = [{"uuid": u, "name": n} for u, n in athletes_meta.items()]
     _emit(
-        log,
-        "done",
+        log, "done",
         f"inserted={summary['rows_inserted']} updated={summary['rows_updated']} "
         f"power_rows={summary['power_curve_rows']} scored={len(summary['scores'])}",
     )
     return summary
 
 
-def _persist_power_curve(athlete_uuid: str, date_str: str, movement: str, trial_id: int, m: dict) -> None:
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_athlete(
+    name: str,
+    date_str: str,
+    athlete_uuid_override: Optional[str],
+    session_gender: str,
+    athletes_meta: Dict[str, str],
+    log: Callable,
+    summary: Dict,
+) -> tuple:
+    """Return (athlete_uuid, date_str) or (None, date_str) on failure."""
+    if athlete_uuid_override:
+        athlete_uuid = athlete_uuid_override
+    else:
+        try:
+            athlete_uuid, _ = get_or_create_athlete(
+                name=name,
+                source_system="readiness_screen",
+                source_athlete_id=extract_source_athlete_id(name),
+                gender=session_gender,
+            )
+        except ValueError as ve:
+            _emit(log, "ERROR", f"  {name}: {ve}")
+            summary["errors"].append(str(ve))
+            return None, date_str
+
+    if athlete_uuid not in athletes_meta:
+        athletes_meta[athlete_uuid] = name
+        _emit(log, "athlete", f"  {name} -> {athlete_uuid} (matched)")
+
+    return athlete_uuid, date_str
+
+
+def _calc_age(athlete_uuid: str, date_str: str):
+    """Return (age_at_collection, age_group, possibly_normalised_date_str)."""
+    age_at_collection = None
+    age_group = None
+    dob = get_athlete_dob(athlete_uuid)
+    try:
+        session_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        session_date = normalize_session_date(session_date) or session_date
+        date_str = session_date.strftime("%Y-%m-%d")
+        if dob:
+            dob_date = dob if hasattr(dob, "year") else parse_date(str(dob))
+            if dob_date:
+                age_at_collection = calculate_age_at_collection(session_date, dob_date)
+                if age_at_collection is not None and not (0 <= age_at_collection <= 120):
+                    age_at_collection = None
+                age_group = calculate_age_group(age_at_collection)
+    except Exception:
+        pass
+    return age_at_collection, age_group, date_str
+
+
+def _upsert(conn, table: str, insert_data: Dict, update_cols: List[str],
+            where_clause: str, where_params: tuple) -> str:
+    """INSERT or UPDATE a row. Returns 'inserted' or 'updated'."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT 1 FROM public.{table} WHERE {where_clause} LIMIT 1",
+            where_params,
+        )
+        exists = cur.fetchone() is not None
+
+        if exists:
+            set_clause = ", ".join(f"{c} = %s" for c in update_cols)
+            params = [insert_data[c] for c in update_cols] + list(where_params)
+            cur.execute(
+                f"UPDATE public.{table} SET {set_clause} WHERE {where_clause}",
+                params,
+            )
+            verb = "updated"
+        else:
+            cols = list(insert_data.keys())
+            placeholders = ", ".join(["%s"] * len(cols))
+            cur.execute(
+                f"INSERT INTO public.{table} ({', '.join(cols)}) VALUES ({placeholders})",
+                [insert_data[c] for c in cols],
+            )
+            verb = "inserted"
+
+    conn.commit()
+    return verb
+
+
+def _trial_id_from_name(trial_name: str) -> int:
+    """Extract trailing integer from trial name, e.g. 'CMJ1' -> 1, 'PPU2' -> 2."""
+    m = re.search(r"(\d+)\s*$", trial_name)
+    return int(m.group(1)) if m else 1
+
+
+def _persist_power_curve(athlete_uuid: str, date_str: str, movement: str,
+                          trial_id: int, m: dict) -> None:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -354,14 +544,16 @@ def _persist_power_curve(athlete_uuid: str, date_str: str, movement: str, trial_
                 (
                     athlete_uuid, date_str, movement, trial_id,
                     m.get("source_file"), m.get("fs_hz"),
-                    m.get("n_samples"), m.get("peak_power_w"), m.get("time_to_peak_s"),
-                    m.get("rise_time_10_90_s"), m.get("rise_slope_w_per_s"),
-                    m.get("fwhm_s"), m.get("auc_j"),
-                    m.get("t_com_s"), m.get("t_com_norm_0to1"), m.get("cv_local_peak"),
-                    m.get("rpd_max_w_per_s"), m.get("time_to_rpd_max_s"),
-                    m.get("auc_pre_j"), m.get("auc_post_j"), m.get("work_early_pct"),
-                    m.get("decay_90_10_s"), m.get("skewness"), m.get("kurtosis"),
-                    m.get("spectral_centroid_hz"),
+                    _safe(m.get("n_samples")), _safe(m.get("peak_power_w")),
+                    _safe(m.get("time_to_peak_s")), _safe(m.get("rise_time_10_90_s")),
+                    _safe(m.get("rise_slope_w_per_s")), _safe(m.get("fwhm_s")),
+                    _safe(m.get("auc_j")), _safe(m.get("t_com_s")),
+                    _safe(m.get("t_com_norm_0to1")), _safe(m.get("cv_local_peak")),
+                    _safe(m.get("rpd_max_w_per_s")), _safe(m.get("time_to_rpd_max_s")),
+                    _safe(m.get("auc_pre_j")), _safe(m.get("auc_post_j")),
+                    _safe(m.get("work_early_pct")), _safe(m.get("decay_90_10_s")),
+                    _safe(m.get("skewness")), _safe(m.get("kurtosis")),
+                    _safe(m.get("spectral_centroid_hz")),
                 ),
             )
         conn.commit()
@@ -369,7 +561,7 @@ def _persist_power_curve(athlete_uuid: str, date_str: str, movement: str, trial_
         conn.close()
 
 
-# CLI entry — useful for testing without the Flask app.
+# CLI entry
 if __name__ == "__main__":
     import argparse
 
@@ -377,7 +569,7 @@ if __name__ == "__main__":
     parser.add_argument("output_dir")
     parser.add_argument("--power-dir", default=None)
     parser.add_argument("--fs-hz", type=float, default=1000.0)
-    parser.add_argument("--athlete-uuid", default=None, help="Existing Athlete flow override")
+    parser.add_argument("--athlete-uuid", default=None)
     args = parser.parse_args()
 
     summary = run_ingestion(

@@ -1,36 +1,33 @@
 """
 File parsers for readiness screen output files.
 
-Faithful port of backend's uais/python/readinessScreen/file_parsers.py. The
-parsing rules (line/column layout, name/date regex, header order) match the
-backend exactly so files produced by the existing capture pipeline parse the
-same way here.
+I/Y/T/IR90 files use the original static names (i_data.txt, etc.).
+CMJ/PPU files now use the Athletic Screen format: CMJ1.txt, CMJ2.txt, PPU1.txt, etc.
+with matching CMJ1_Power.txt / PPU1_Power.txt power-time-series files.
 """
 from __future__ import annotations
 
 import os
 import re
 import xml.etree.ElementTree as ET
-from typing import Dict, Optional
+from math import inf
+from typing import Dict, List, Optional
 
 from .units import meters_to_inches, kg_to_lbs
 
 
-# Mapping movement_type → expected file name in the Output Files folder.
-# Used by the maintenance page to discover what's available before running.
+# Static file mapping for isometric force movements only.
+# CMJ and PPU are now discovered dynamically as CMJ1.txt, PPU1.txt, etc.
 ASCII_FILES = {
     "I":    "i_data.txt",
     "Y":    "y_data.txt",
     "T":    "t_data.txt",
     "IR90": "ir90_data.txt",
-    "CMJ":  "cmj_data.txt",
-    "PPU":  "ppu_data.txt",
 }
 
-# Column order in the cmj/ppu txt rows (after the leading row-number column).
+# 5-column format (Athletic Screen style): JH, PP_FP, Force@PP, Vel@PP, W/kg
 CMJ_PPU_COLUMNS = [
-    "JH_IN", "LEWIS_PEAK_POWER", "Max_Force",
-    "PP_W_per_kg", "PP_FORCEPLATE", "Force_at_PP", "Vel_at_PP",
+    "JH_IN", "PP_FORCEPLATE", "Force_at_PP", "Vel_at_PP", "PP_W_per_kg",
 ]
 
 # Column order in the I/Y/T/IR90 txt rows.
@@ -41,13 +38,11 @@ FORCE_COLUMNS = [
 
 # ---------------------------------------------------------------------------
 # Helpers — extract athlete name and session date from the file's first line.
-# Backend logic matched bit-for-bit so a file the backend ingests fine ingests
-# fine here too.
 # ---------------------------------------------------------------------------
 
 def extract_name(line: str) -> Optional[str]:
     """First-line path looks like:
-       \\D:\\Athletic Screen 2.0\\Data\\NAME\\2024-11-24__2\\...
+       \\D:\\...\\Data\\NAME\\2024-11-24__2\\...
     The athlete name is the path segment immediately after the segment 'Data'."""
     try:
         parts = line.split(chr(92))  # backslash
@@ -80,6 +75,16 @@ def extract_date(line: str) -> Optional[str]:
 
     m = re.search(r"(\d{4}-\d{2}-\d{2})", line)
     return m.group(1) if m else None
+
+
+def peek_file_date(file_path: str) -> Optional[str]:
+    """Read only line 0 of a txt file and return its YYYY-MM-DD date, or None."""
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            first_line = f.readline()
+        return extract_date(first_line)
+    except OSError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -140,16 +145,60 @@ def normalize_gender(g: Optional[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-test txt parsing. Returns a dict with name, date, movement_type, and
-# whatever metric columns are appropriate for that movement.
+# Power file helpers (Athletic Screen style).
+# ---------------------------------------------------------------------------
+
+def peak_power_from_pow_file(trial_name_base: str, folder_path: str) -> Optional[float]:
+    """Return the maximum PowZ value from {trial_name_base}_Power.txt, or None."""
+    power_file = os.path.join(folder_path, f"{trial_name_base}_Power.txt")
+    if not os.path.exists(power_file):
+        return None
+
+    peak = -inf
+    try:
+        with open(power_file, "r", encoding="utf-8", errors="ignore") as pf:
+            in_numeric = False
+            for line in pf:
+                line = line.strip()
+                if not line:
+                    continue
+                if re.match(r"^\d+\s+", line):
+                    in_numeric = True
+                if in_numeric:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            val = float(parts[1])
+                            if val > peak:
+                                peak = val
+                        except ValueError:
+                            pass
+    except Exception:
+        return None
+
+    return None if peak == -inf else peak
+
+
+# ---------------------------------------------------------------------------
+# Per-test txt parsing.
 #
-# File layout (matches backend reader):
-#   line 0: tab-separated paths
+# File layout:
+#   line 0: tab-separated paths (contains athlete name and session date)
 #   lines 1-4: header / metadata (skip)
 #   line 5+:  numeric rows, "rownum\tcol1\tcol2\t..."
 # ---------------------------------------------------------------------------
 
-def parse_txt_file(file_path: str, movement_type: str) -> Optional[Dict]:
+def parse_txt_file(
+    file_path: str,
+    movement_type: str,
+    folder_path: Optional[str] = None,
+) -> Optional[Dict]:
+    """Parse a readiness screen txt file.
+
+    For CMJ/PPU, pass folder_path so the matching *_Power.txt can be loaded
+    to populate the Peak_Power field.  Returns a dict with name, date,
+    movement_type, trial_name (CMJ/PPU only), and metric columns.
+    """
     if not os.path.isfile(file_path):
         return None
 
@@ -188,22 +237,36 @@ def parse_txt_file(file_path: str, movement_type: str) -> Optional[Dict]:
         return None
 
     if movement_type in ("CMJ", "PPU"):
-        if len(values) < 7:
+        if len(values) < 5:
             return None
-        keys = CMJ_PPU_COLUMNS
+        trial_name = os.path.splitext(os.path.basename(file_path))[0]
+        peak_power = peak_power_from_pow_file(trial_name, folder_path) if folder_path else None
+
+        out = {
+            "name":          name,
+            "date":          date,
+            "movement_type": movement_type,
+            "trial_name":    trial_name,
+            "Peak_Power":    peak_power,
+        }
+        for i, k in enumerate(CMJ_PPU_COLUMNS):
+            out[k] = values[i] if i < len(values) else None
+        return out
     else:
         if len(values) < 5:
             return None
-        keys = FORCE_COLUMNS
+        out = {"name": name, "date": date, "movement_type": movement_type}
+        for i, k in enumerate(FORCE_COLUMNS):
+            out[k] = values[i] if i < len(values) else None
+        return out
 
-    out = {"name": name, "date": date, "movement_type": movement_type}
-    for i, k in enumerate(keys):
-        out[k] = values[i] if i < len(values) else None
-    return out
 
+# ---------------------------------------------------------------------------
+# File discovery.
+# ---------------------------------------------------------------------------
 
 def discover_txt_files(output_dir: str) -> Dict[str, str]:
-    """Scan an Output Files directory and return {movement_type: file_path} for present files."""
+    """Return {movement_type: file_path} for the static I/Y/T/IR90 files."""
     found = {}
     if not output_dir or not os.path.isdir(output_dir):
         return found
@@ -212,3 +275,31 @@ def discover_txt_files(output_dir: str) -> Dict[str, str]:
         if os.path.isfile(p):
             found[movement] = p
     return found
+
+
+def discover_cmj_ppu_trials(output_dir: str) -> List[Dict]:
+    """Return a list of CMJ/PPU trial descriptors.
+
+    Each entry: {movement_type, trial_name, file_path}.
+    Discovers all CMJ*.txt and PPU*.txt files (case-insensitive),
+    excluding *_Power.txt files.
+    """
+    results = []
+    if not output_dir or not os.path.isdir(output_dir):
+        return results
+    for fname in sorted(os.listdir(output_dir)):
+        if not fname.endswith(".txt") or fname.endswith("_Power.txt"):
+            continue
+        upper = fname.upper()
+        if upper.startswith("CMJ"):
+            mvt = "CMJ"
+        elif upper.startswith("PPU"):
+            mvt = "PPU"
+        else:
+            continue
+        results.append({
+            "movement_type": mvt,
+            "trial_name":    os.path.splitext(fname)[0],
+            "file_path":     os.path.join(output_dir, fname),
+        })
+    return results

@@ -251,41 +251,117 @@
             el.innerHTML = `<div class="text-muted" style="font-size: 0.85rem; padding: 1rem 0;">No power-curve data yet — drop *_Power.txt files into the output folder before running ingestion.</div>`;
             return;
         }
+        const xs_cmj = cmj.map((r) => fmtDate(r.date));
+        const xs_ppu = ppu.map((r) => fmtDate(r.date));
         const traces = [];
+
+        // ── y (left): Peak power W ──────────────────────────────────────
+        if (cmj.length) traces.push({
+            type: "scatter", mode: "lines+markers",
+            x: xs_cmj, y: cmj.map((r) => r.peak_power_w),
+            line: { color: "#50fa7b" }, marker: { size: 7 },
+            name: "CMJ peak power (W)", yaxis: "y",
+            hovertemplate: "%{x}<br>Peak: %{y:.0f} W<extra>CMJ</extra>",
+        });
+        if (ppu.length) traces.push({
+            type: "scatter", mode: "lines+markers",
+            x: xs_ppu, y: ppu.map((r) => r.peak_power_w),
+            line: { color: "#ffb86c" }, marker: { size: 7 },
+            name: "PPU peak power (W)", yaxis: "y",
+            hovertemplate: "%{x}<br>Peak: %{y:.0f} W<extra>PPU</extra>",
+        });
+        // AUC (J) — legendonly; different unit but trend is meaningful
+        if (cmj.length) traces.push({
+            type: "scatter", mode: "lines+markers",
+            x: xs_cmj, y: cmj.map((r) => r.auc_j),
+            line: { color: "#50fa7b", dash: "longdash" }, marker: { size: 5 },
+            name: "CMJ AUC (J)", yaxis: "y", visible: "legendonly",
+            hovertemplate: "%{x}<br>AUC: %{y:.0f} J<extra>CMJ</extra>",
+        });
+        if (ppu.length) traces.push({
+            type: "scatter", mode: "lines+markers",
+            x: xs_ppu, y: ppu.map((r) => r.auc_j),
+            line: { color: "#ffb86c", dash: "longdash" }, marker: { size: 5 },
+            name: "PPU AUC (J)", yaxis: "y", visible: "legendonly",
+            hovertemplate: "%{x}<br>AUC: %{y:.0f} J<extra>PPU</extra>",
+        });
+
+        // ── y2 (right): RPD + rise slope, W/s ───────────────────────────
         if (cmj.length) {
             traces.push({
                 type: "scatter", mode: "lines+markers",
-                x: cmj.map((r) => fmtDate(r.date)), y: cmj.map((r) => r.peak_power_w),
-                line: { color: "#50fa7b" }, marker: { size: 7 },
-                name: "CMJ peak power (W)",
-                hovertemplate: "%{x}<br>Peak: %{y:.0f} W<extra>CMJ</extra>",
-                yaxis: "y",
+                x: xs_cmj, y: cmj.map((r) => r.rpd_max),
+                line: { color: "#bd93f9", dash: "dot" }, marker: { size: 6 },
+                name: "CMJ RPD max (W/s)", yaxis: "y2",
+                hovertemplate: "%{x}<br>RPD: %{y:.0f} W/s<extra>CMJ</extra>",
             });
             traces.push({
                 type: "scatter", mode: "lines+markers",
-                x: cmj.map((r) => fmtDate(r.date)), y: cmj.map((r) => r.rpd_max),
-                line: { color: "#bd93f9", dash: "dot" }, marker: { size: 6 },
-                name: "CMJ RPD max (W/s)",
-                yaxis: "y2",
-                hovertemplate: "%{x}<br>RPD: %{y:.0f} W/s<extra>CMJ</extra>",
+                x: xs_cmj, y: cmj.map((r) => r.rise_slope),
+                line: { color: "#8be9fd", dash: "dot" }, marker: { size: 5 },
+                name: "CMJ rise slope (W/s)", yaxis: "y2", visible: "legendonly",
+                hovertemplate: "%{x}<br>Rise: %{y:.0f} W/s<extra>CMJ</extra>",
             });
         }
         if (ppu.length) {
             traces.push({
                 type: "scatter", mode: "lines+markers",
-                x: ppu.map((r) => fmtDate(r.date)), y: ppu.map((r) => r.peak_power_w),
-                line: { color: "#ffb86c" }, marker: { size: 7 },
-                name: "PPU peak power (W)",
-                hovertemplate: "%{x}<br>Peak: %{y:.0f} W<extra>PPU</extra>",
-                yaxis: "y",
+                x: xs_ppu, y: ppu.map((r) => r.rpd_max),
+                line: { color: "#ff79c6", dash: "dot" }, marker: { size: 6 },
+                name: "PPU RPD max (W/s)", yaxis: "y2",
+                hovertemplate: "%{x}<br>RPD: %{y:.0f} W/s<extra>PPU</extra>",
+            });
+            traces.push({
+                type: "scatter", mode: "lines+markers",
+                x: xs_ppu, y: ppu.map((r) => r.rise_slope),
+                line: { color: "#6272a4", dash: "dot" }, marker: { size: 5 },
+                name: "PPU rise slope (W/s)", yaxis: "y2", visible: "legendonly",
+                hovertemplate: "%{x}<br>Rise: %{y:.0f} W/s<extra>PPU</extra>",
             });
         }
+
+        // ── y3 (far right): Duration, seconds ───────────────────────────
+        if (cmj.length) {
+            traces.push({
+                type: "scatter", mode: "lines+markers",
+                x: xs_cmj, y: cmj.map((r) => r.fwhm),
+                line: { color: "#f1fa8c" }, marker: { size: 5 },
+                name: "CMJ FWHM (s)", yaxis: "y3", visible: "legendonly",
+                hovertemplate: "%{x}<br>FWHM: %{y:.3f} s<extra>CMJ</extra>",
+            });
+            traces.push({
+                type: "scatter", mode: "lines+markers",
+                x: xs_cmj, y: cmj.map((r) => r.decay),
+                line: { color: "#f1fa8c", dash: "dash" }, marker: { size: 5 },
+                name: "CMJ decay 90→10 (s)", yaxis: "y3", visible: "legendonly",
+                hovertemplate: "%{x}<br>Decay: %{y:.3f} s<extra>CMJ</extra>",
+            });
+        }
+        if (ppu.length) {
+            traces.push({
+                type: "scatter", mode: "lines+markers",
+                x: xs_ppu, y: ppu.map((r) => r.fwhm),
+                line: { color: "#ffa07a" }, marker: { size: 5 },
+                name: "PPU FWHM (s)", yaxis: "y3", visible: "legendonly",
+                hovertemplate: "%{x}<br>FWHM: %{y:.3f} s<extra>PPU</extra>",
+            });
+            traces.push({
+                type: "scatter", mode: "lines+markers",
+                x: xs_ppu, y: ppu.map((r) => r.decay),
+                line: { color: "#ffa07a", dash: "dash" }, marker: { size: 5 },
+                name: "PPU decay 90→10 (s)", yaxis: "y3", visible: "legendonly",
+                hovertemplate: "%{x}<br>Decay: %{y:.3f} s<extra>PPU</extra>",
+            });
+        }
+
         Plotly.react(el, traces, {
             ...layoutBase,
-            xaxis: { ...layoutBase.xaxis, type: "category" },
+            xaxis:  { ...layoutBase.xaxis, type: "category", domain: [0, 0.86] },
             yaxis:  { ...layoutBase.yaxis, title: "Peak power (W)" },
-            yaxis2: { ...layoutBase.yaxis, title: "RPD (W/s)", overlaying: "y", side: "right", showgrid: false },
-            legend: { ...layoutBase.legend, orientation: "h", y: -0.18 },
+            yaxis2: { ...layoutBase.yaxis, title: "RPD / rise (W/s)", overlaying: "y", side: "right", showgrid: false },
+            yaxis3: { ...layoutBase.yaxis, title: "Duration (s)", overlaying: "y", side: "right", position: 1.0, showgrid: false },
+            legend: { ...layoutBase.legend, orientation: "h", y: -0.22 },
+            margin: { l: 50, r: 95, t: 28, b: 40 },
         }, config);
     }
 
