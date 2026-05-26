@@ -742,6 +742,380 @@ class TestTrialIdAndUpsertKey(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Tests for the three bug fixes made on 2026-05-26
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestExtractSourceAthleteId(unittest.TestCase):
+    """extract_source_athlete_id now handles underscore-separated initials."""
+
+    def _fn(self, name):
+        from ingestion.athlete_manager import extract_source_athlete_id
+        return extract_source_athlete_id(name)
+
+    # ── underscore-separated (the new fix) ────────────────────────────────────
+
+    def test_underscore_two_char_initials(self):
+        """'Trevor Cleveland_TC' → 'TC'  (was returning full string before fix)."""
+        self.assertEqual(self._fn("Trevor Cleveland_TC"), "TC")
+
+    def test_underscore_two_char_initials_cw(self):
+        """'Connor Wong_CW' → 'CW'."""
+        self.assertEqual(self._fn("Connor Wong_CW"), "CW")
+
+    def test_underscore_three_char_initials(self):
+        """'John Smith_JSM' → 'JSM'."""
+        self.assertEqual(self._fn("John Smith_JSM"), "JSM")
+
+    # ── space-separated (pre-existing behaviour must still work) ──────────────
+
+    def test_space_two_char_initials(self):
+        """'Trevor Cleveland TC' → 'TC'."""
+        self.assertEqual(self._fn("Trevor Cleveland TC"), "TC")
+
+    def test_space_three_char_initials(self):
+        """'John Smith JSM' → 'JSM'."""
+        self.assertEqual(self._fn("John Smith JSM"), "JSM")
+
+    # ── no initials → full name returned ─────────────────────────────────────
+
+    def test_no_initials_returns_full_name(self):
+        """'Connor Wong' → 'Connor Wong' (nothing to strip)."""
+        self.assertEqual(self._fn("Connor Wong"), "Connor Wong")
+
+    def test_no_initials_clean_name(self):
+        self.assertEqual(self._fn("John Smith"), "John Smith")
+
+    # ── edge cases ────────────────────────────────────────────────────────────
+
+    def test_empty_string_returns_empty(self):
+        self.assertEqual(self._fn(""), "")
+
+    def test_whitespace_only_returns_whitespace(self):
+        self.assertEqual(self._fn("  "), "  ")
+
+    def test_lowercase_trailing_letters_not_stripped(self):
+        """Trailing lowercase letters are NOT initials — full name returned."""
+        self.assertEqual(self._fn("John Smith_tc"), "John Smith_tc")
+
+    def test_single_char_trailing_not_stripped(self):
+        """A single trailing letter is not long enough to be initials."""
+        self.assertEqual(self._fn("John Smith_J"), "John Smith_J")
+
+    def test_four_char_trailing_not_stripped(self):
+        """Four+ uppercase letters are NOT initials (regex requires 2–3)."""
+        self.assertEqual(self._fn("John Smith_JOHN"), "John Smith_JOHN")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFindExistingAthleteCase(unittest.TestCase):
+    """find_existing_athlete now uses UPPER() for a case-insensitive exact match."""
+
+    def _make_cursor(self, first_result, all_results=None):
+        """Return a mock cursor whose first fetchone() call returns first_result
+        and whose fetchall() returns all_results (for the fuzzy fallback path)."""
+        cur = MagicMock()
+        cur.fetchone.return_value = first_result
+        cur.fetchall.return_value = all_results or []
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        conn.cursor.return_value.__exit__.return_value = False
+        return conn, cur
+
+    def test_lowercase_db_found_via_upper_exact(self):
+        """Athlete stored as 'trevor cleveland' (lowercase) must be found on the
+        first pass (UPPER comparison) — NOT via fuzzy fallback."""
+        from ingestion.athlete_manager import find_existing_athlete
+
+        mock_row = {"athlete_uuid": "uuid-tc", "name": "Trevor Cleveland",
+                    "normalized_name": "trevor cleveland"}
+        conn, cur = self._make_cursor(first_result=mock_row)
+
+        result = find_existing_athlete(conn, "TREVOR CLEVELAND")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["athlete_uuid"], "uuid-tc")
+        # Verify SQL uses UPPER(normalized_name) — case-insensitive exact path
+        first_sql = cur.execute.call_args_list[0][0][0]
+        self.assertIn("UPPER(normalized_name)", first_sql)
+        # Fuzzy fallback (fetchall) must NOT have been reached
+        cur.fetchall.assert_not_called()
+
+    def test_uppercase_db_also_found_via_upper_exact(self):
+        """Athletes stored with uppercase normalized_name still match."""
+        from ingestion.athlete_manager import find_existing_athlete
+
+        mock_row = {"athlete_uuid": "uuid-cw", "name": "Connor Wong",
+                    "normalized_name": "CONNOR WONG"}
+        conn, cur = self._make_cursor(first_result=mock_row)
+
+        result = find_existing_athlete(conn, "CONNOR WONG")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["athlete_uuid"], "uuid-cw")
+        cur.fetchall.assert_not_called()
+
+    def test_no_exact_match_falls_to_fuzzy(self):
+        """When exact match returns nothing, fuzzy fallback is tried."""
+        from ingestion.athlete_manager import find_existing_athlete
+
+        fuzzy_row = {"athlete_uuid": "uuid-fuzzy", "name": "Trevor Cleveland",
+                     "normalized_name": "TREVOR CLEVELAND"}
+        # fetchone() → None (no exact match); fetchall() → one candidate
+        conn, cur = self._make_cursor(first_result=None, all_results=[fuzzy_row])
+
+        result = find_existing_athlete(conn, "TREVOR CLEVELAND TC")
+
+        # Fuzzy path was attempted
+        cur.fetchall.assert_called_once()
+        # Should still find Trevor Cleveland via high similarity
+        self.assertIsNotNone(result)
+        self.assertEqual(result["athlete_uuid"], "uuid-fuzzy")
+
+    def test_no_match_anywhere_returns_none(self):
+        """If neither exact nor fuzzy finds anyone, None is returned."""
+        from ingestion.athlete_manager import find_existing_athlete
+
+        conn, cur = self._make_cursor(first_result=None, all_results=[])
+
+        result = find_existing_athlete(conn, "COMPLETELY UNKNOWN PERSON")
+
+        self.assertIsNone(result)
+
+    def test_fuzzy_match_emits_warning(self):
+        """A fuzzy match should emit a log.warning so it appears in the SSE stream."""
+        import logging
+        from ingestion.athlete_manager import find_existing_athlete
+
+        fuzzy_row = {"athlete_uuid": "uuid-fuzzy", "name": "Trevor Cleveland",
+                     "normalized_name": "TREVOR CLEVELAND"}
+        conn, cur = self._make_cursor(first_result=None, all_results=[fuzzy_row])
+
+        with self.assertLogs("ingestion.athlete_manager", level=logging.WARNING) as cm:
+            find_existing_athlete(conn, "TREVOR CLEVELAND TC")
+
+        self.assertTrue(
+            any("Fuzzy-matched" in msg for msg in cm.output),
+            f"Expected 'Fuzzy-matched' warning, got: {cm.output}",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestUpsertNullSafety(unittest.TestCase):
+    """The CMJ/PPU upsert WHERE clause uses IS NOT DISTINCT FROM for NULL-safe
+    matching, preventing duplicate INSERTs when trial_name is NULL."""
+
+    def _make_conn(self, row_exists: bool):
+        """Mock connection where SELECT returns a row iff row_exists=True."""
+        cur = MagicMock()
+        cur.fetchone.return_value = MagicMock() if row_exists else None
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        conn.cursor.return_value.__exit__.return_value = False
+        return conn, cur
+
+    def test_null_trial_name_finds_existing_row(self):
+        """_upsert with trial_name=None returns 'updated' when a matching NULL
+        row already exists — IS NOT DISTINCT FROM NULL is TRUE for NULL."""
+        conn, cur = self._make_conn(row_exists=True)
+
+        result = _pl._upsert(
+            conn, "f_readiness_screen_cmj",
+            {"athlete_uuid": "u1", "session_date": "2024-01-01",
+             "trial_name": None, "jump_height": 15.0},
+            ["jump_height"],
+            "athlete_uuid = %s AND session_date = %s AND trial_name IS NOT DISTINCT FROM %s",
+            ("u1", "2024-01-01", None),
+        )
+
+        self.assertEqual(result, "updated")
+        # Confirm IS NOT DISTINCT FROM appears in the SELECT
+        sqls = [call[0][0] for call in cur.execute.call_args_list]
+        self.assertTrue(
+            any("IS NOT DISTINCT FROM" in s for s in sqls),
+            "Expected IS NOT DISTINCT FROM in SQL",
+        )
+
+    def test_null_trial_name_inserts_when_no_existing_row(self):
+        """_upsert with trial_name=None returns 'inserted' when no row exists."""
+        conn, cur = self._make_conn(row_exists=False)
+
+        result = _pl._upsert(
+            conn, "f_readiness_screen_cmj",
+            {"athlete_uuid": "u1", "session_date": "2024-01-01",
+             "trial_name": None, "jump_height": 15.0},
+            ["jump_height"],
+            "athlete_uuid = %s AND session_date = %s AND trial_name IS NOT DISTINCT FROM %s",
+            ("u1", "2024-01-01", None),
+        )
+
+        self.assertEqual(result, "inserted")
+
+    def test_named_trial_finds_existing_row(self):
+        """_upsert with a real trial_name returns 'updated' when the row exists."""
+        conn, cur = self._make_conn(row_exists=True)
+
+        result = _pl._upsert(
+            conn, "f_readiness_screen_cmj",
+            {"athlete_uuid": "u1", "session_date": "2024-01-01",
+             "trial_name": "CMJ1", "jump_height": 15.0},
+            ["jump_height"],
+            "athlete_uuid = %s AND session_date = %s AND trial_name IS NOT DISTINCT FROM %s",
+            ("u1", "2024-01-01", "CMJ1"),
+        )
+
+        self.assertEqual(result, "updated")
+
+    def test_pipeline_where_clause_contains_is_not_distinct_from(self):
+        """Integration: the pipeline-generated WHERE clause for CMJ uses
+        IS NOT DISTINCT FROM rather than the old broken = comparison."""
+        tmp = tempfile.mkdtemp()
+        try:
+            athlete = "Smith_John"
+            with open(os.path.join(tmp, "CMJ1.txt"), "w") as f:
+                f.write(cmj_txt(athlete, TODAY, "CMJ1"))
+
+            conn, cur, _ = make_db_mock()
+            sqls_seen = []
+            original_execute = cur.execute
+
+            def capturing_execute(sql, params=None):
+                sqls_seen.append(sql)
+                return original_execute(sql, params)
+
+            cur.execute = capturing_execute
+
+            with ExitStack() as s:
+                apply_pipeline_patches(s, conn)
+                _pl.run_ingestion(tmp, log=lambda m: None)
+
+            cmj_selects = [s for s in sqls_seen
+                           if "f_readiness_screen_cmj" in s and "SELECT" in s]
+            self.assertTrue(len(cmj_selects) > 0, "No SELECT for CMJ table found")
+            self.assertTrue(
+                all("IS NOT DISTINCT FROM" in s for s in cmj_selects),
+                f"CMJ SELECT missing IS NOT DISTINCT FROM: {cmj_selects}",
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_re_run_same_session_does_not_add_rows(self):
+        """Running the same CMJ session twice should update (not insert) the
+        second time — validates the upsert key logic end-to-end."""
+        tmp = tempfile.mkdtemp()
+        try:
+            athlete = "Smith_John"
+            with open(os.path.join(tmp, "CMJ1.txt"), "w") as f:
+                f.write(cmj_txt(athlete, TODAY, "CMJ1"))
+
+            # First run: row does not exist → INSERT
+            conn1, cur1, inserted1 = make_db_mock()
+            with ExitStack() as s:
+                apply_pipeline_patches(s, conn1)
+                summary1 = _pl.run_ingestion(tmp, log=lambda m: None)
+            self.assertEqual(summary1["rows_inserted"], 1)
+            self.assertEqual(summary1["rows_updated"], 0)
+
+            # Second run: row DOES exist → UPDATE
+            conn2, cur2, inserted2 = make_db_mock()
+            cur2.fetchone.return_value = MagicMock()   # simulate existing row
+            with ExitStack() as s:
+                apply_pipeline_patches(s, conn2)
+                summary2 = _pl.run_ingestion(tmp, log=lambda m: None)
+            self.assertEqual(summary2["rows_inserted"], 0)
+            self.assertEqual(summary2["rows_updated"], 1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSourceAthleteIdWithOverride(unittest.TestCase):
+    """When athlete_uuid_override is active, source_athlete_id is derived from
+    the resolved athlete's name (not the raw file-path name), so the DB row
+    is never labelled with a different person's identifier."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, content):
+        with open(os.path.join(self.tmp, name), "w") as f:
+            f.write(content)
+
+    def test_source_athlete_id_extracted_from_resolved_name(self):
+        """File path says 'Trevor Cleavland_TC' but override points to Connor
+        Wong (CW).  The INSERT should contain source_athlete_id derived from
+        the override athlete, not from 'Trevor Cleavland_TC'."""
+        # File path embeds a different athlete's name
+        self._write("CMJ1.txt", cmj_txt("Trevor Cleavland_TC", TODAY, "CMJ1"))
+
+        conn, cur, _ = make_db_mock()
+        insert_params: list = []
+
+        original_execute = cur.execute
+
+        def capturing_execute(sql, params=None):
+            if params and "INSERT INTO" in sql and "f_readiness_screen_cmj" in sql:
+                insert_params.append(params)
+            return original_execute(sql, params)
+
+        cur.execute = capturing_execute
+
+        with ExitStack() as s:
+            apply_pipeline_patches(s, conn, athlete_uuid="connor-wong-uuid")
+            _pl.run_ingestion(
+                self.tmp,
+                log=lambda m: None,
+                athlete_uuid_override="connor-wong-uuid",
+            )
+
+        self.assertTrue(insert_params, "No INSERT into CMJ table detected")
+        # source_athlete_id is the 4th positional column after athlete_uuid,
+        # session_date, source_system — find it by scanning for known initials.
+        all_params = [str(p) for row in insert_params for p in row]
+        # Should NOT contain the raw file-path name
+        self.assertNotIn("Trevor Cleavland_TC", all_params,
+                         "source_athlete_id must not be the raw file-path name")
+
+    def test_source_athlete_id_uses_extract_on_resolved_name(self):
+        """When the file says 'Connor Wong_CW' and auto-resolve finds Connor
+        Wong, source_athlete_id should be 'CW' — not 'Connor Wong_CW'."""
+        self._write("CMJ1.txt", cmj_txt("Connor Wong_CW", TODAY, "CMJ1"))
+
+        conn, cur, _ = make_db_mock()
+        insert_params: list = []
+
+        original_execute = cur.execute
+
+        def capturing_execute(sql, params=None):
+            if params and "INSERT INTO" in sql and "f_readiness_screen_cmj" in sql:
+                insert_params.append(list(params))
+            return original_execute(sql, params)
+
+        cur.execute = capturing_execute
+
+        with ExitStack() as s:
+            # Auto-resolve: get_or_create_athlete returns Connor Wong's UUID.
+            # The pipeline stores athletes_meta[uuid] = "Connor Wong_CW" initially,
+            # then extract_source_athlete_id("Connor Wong_CW") returns "CW".
+            apply_pipeline_patches(s, conn, athlete_uuid="cw-uuid")
+            _pl.run_ingestion(self.tmp, log=lambda m: None)
+
+        self.assertTrue(insert_params, "No INSERT into CMJ table detected")
+        all_values = [str(v) for row in insert_params for v in row]
+        # The full string with underscore must not be stored raw
+        self.assertNotIn("Connor Wong_CW", all_values,
+                         "source_athlete_id must be 'CW', not 'Connor Wong_CW'")
+        # The extracted initials should appear
+        self.assertIn("CW", all_values,
+                      "source_athlete_id should be 'CW' after extract_source_athlete_id fix")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":

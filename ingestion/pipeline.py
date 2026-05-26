@@ -210,7 +210,10 @@ def run_ingestion(
                 age_at_collection, age_group, date_str = _calc_age(athlete_uuid, date_str)
 
                 table = ISO_TABLE[movement]
-                src_id = extract_source_athlete_id(name)
+                # When UUID override is active the file-path name may belong to a
+                # different person. Use the resolved athlete's display name instead.
+                resolved_name = athletes_meta.get(athlete_uuid, name)
+                src_id = extract_source_athlete_id(resolved_name)
 
                 insert_data = {
                     "athlete_uuid":      athlete_uuid,
@@ -301,7 +304,10 @@ def run_ingestion(
                     _emit(log, "power", f"  {trial_name}: no Power.txt found — skipping curve")
 
                 table  = CMJ_PPU_TABLE[movement]
-                src_id = extract_source_athlete_id(name)
+                # When UUID override is active the file-path name may belong to a
+                # different person. Use the resolved athlete's display name instead.
+                resolved_name = athletes_meta.get(athlete_uuid, name)
+                src_id = extract_source_athlete_id(resolved_name)
 
                 insert_data = {
                     "athlete_uuid":      athlete_uuid,
@@ -331,7 +337,9 @@ def run_ingestion(
 
                 verb = _upsert(
                     conn, table, insert_data, update_cols,
-                    "athlete_uuid = %s AND session_date = %s AND trial_name = %s",
+                    # IS NOT DISTINCT FROM is NULL-safe: treats NULL = NULL as TRUE,
+                    # preventing duplicate INSERTs when trial_name is NULL (pre-migration rows).
+                    "athlete_uuid = %s AND session_date = %s AND trial_name IS NOT DISTINCT FROM %s",
                     (athlete_uuid, date_str, trial_name),
                 )
                 if verb == "inserted":

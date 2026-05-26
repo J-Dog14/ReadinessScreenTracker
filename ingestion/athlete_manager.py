@@ -87,10 +87,14 @@ def _name_similarity(a: str, b: str) -> float:
 
 
 def extract_source_athlete_id(name: str) -> str:
-    """Backend's extract_source_athlete_id — trailing UPPER initials -> id, else clean name."""
+    """Backend's extract_source_athlete_id — trailing UPPER initials -> id, else clean name.
+
+    Handles both space-separated ('Trevor Cleveland TC') and underscore-separated
+    ('Trevor Cleveland_TC') initials so file-path names are normalised consistently.
+    """
     if not name or not name.strip():
         return name
-    m = re.search(r"\s+([A-Z]{2,3})\s*$", name)
+    m = re.search(r"[\s_]+([A-Z]{2,3})\s*$", name)
     if m:
         return m.group(1)
     return name
@@ -101,16 +105,21 @@ def extract_source_athlete_id(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def find_existing_athlete(conn, normalized_name: str) -> Optional[dict]:
-    """Exact normalized_name first, then 90% fuzzy match."""
+    """Exact normalized_name first (case-insensitive), then 90% fuzzy match.
+
+    The exact match uses UPPER(normalized_name) so athletes whose normalized_name
+    was stored in lowercase by the backend (e.g. 'trevor cleveland') are still
+    found on the first pass instead of falling through to fuzzy matching.
+    """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
             SELECT * FROM analytics.d_athletes
-            WHERE normalized_name = %s
+            WHERE UPPER(normalized_name) = %s
             ORDER BY app_db_uuid NULLS LAST, created_at ASC
             LIMIT 1
             """,
-            (normalized_name,),
+            (normalized_name,),  # normalized_name is already uppercase from normalize_name_for_matching
         )
         row = cur.fetchone()
         if row:
@@ -126,6 +135,15 @@ def find_existing_athlete(conn, normalized_name: str) -> Optional[dict]:
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_row = r
+
+        if best_row:
+            log.warning(
+                "Fuzzy-matched '%s' → '%s' (similarity=%.1f%%). "
+                "If this is wrong, use the athlete UUID override on the maintenance page.",
+                normalized_name,
+                best_row.get("normalized_name"),
+                best_ratio * 100,
+            )
         return dict(best_row) if best_row else None
 
 

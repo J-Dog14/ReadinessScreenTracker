@@ -80,3 +80,42 @@ CREATE TABLE IF NOT EXISTS public.f_readiness_screen_power_curve (
 CREATE INDEX IF NOT EXISTS idx_f_readiness_pc_uuid     ON public.f_readiness_screen_power_curve(athlete_uuid);
 CREATE INDEX IF NOT EXISTS idx_f_readiness_pc_date     ON public.f_readiness_screen_power_curve(session_date);
 CREATE INDEX IF NOT EXISTS idx_f_readiness_pc_movement ON public.f_readiness_screen_power_curve(movement_type);
+
+
+------------------------------------------------------------------------------
+-- f_readiness_screen_cmj / f_readiness_screen_ppu — power-curve columns
+--   Inline metrics matching f_athletic_screen_cmj layout. Safe to re-run
+--   (ADD COLUMN IF NOT EXISTS). Existing rows keep trial_name = NULL and
+--   all power-curve columns = NULL — historical data is untouched.
+------------------------------------------------------------------------------
+ALTER TABLE public.f_readiness_screen_cmj
+    ADD COLUMN IF NOT EXISTS trial_name           TEXT,
+    ADD COLUMN IF NOT EXISTS peak_power_w         DECIMAL,
+    ADD COLUMN IF NOT EXISTS time_to_peak_s       DECIMAL,
+    ADD COLUMN IF NOT EXISTS rpd_max_w_per_s      DECIMAL,
+    ADD COLUMN IF NOT EXISTS time_to_rpd_max_s    DECIMAL,
+    ADD COLUMN IF NOT EXISTS rise_time_10_90_s    DECIMAL,
+    ADD COLUMN IF NOT EXISTS fwhm_s               DECIMAL,
+    ADD COLUMN IF NOT EXISTS auc_j                DECIMAL,
+    ADD COLUMN IF NOT EXISTS work_early_pct       DECIMAL,
+    ADD COLUMN IF NOT EXISTS decay_90_10_s        DECIMAL,
+    ADD COLUMN IF NOT EXISTS t_com_norm_0to1      DECIMAL,
+    ADD COLUMN IF NOT EXISTS skewness             DECIMAL,
+    ADD COLUMN IF NOT EXISTS kurtosis             DECIMAL,
+    ADD COLUMN IF NOT EXISTS spectral_centroid_hz DECIMAL;
+
+ALTER TABLE public.f_readiness_screen_ppu
+    ADD COLUMN IF NOT EXISTS trial_name           TEXT,
+    ADD COLUMN IF NOT EXISTS peak_power_w         DECIMAL,
+    ADD COLUMN IF NOT EXISTS time_to_peak_s       DECIMAL,
+    ADD COLUMN IF NOT EXISTS rpd_max_w_per_s      DECIMAL,
+    ADD COLUMN IF NOT EXISTS time_to_rpd_max_s    DECIMAL,
+    ADD COLUMN IF NOT EXISTS rise_time_10_90_s    DECIMAL,
+    ADD COLUMN IF NOT EXISTS fwhm_s               DECIMAL,
+    ADD COLUMN IF NOT EXISTS auc_j                DECIMAL,
+    ADD COLUMN IF NOT EXISTS work_early_pct       DECIMAL,
+    ADD COLUMN IF NOT EXISTS decay_90_10_s        DECIMAL,
+    ADD COLUMN IF NOT EXISTS t_com_norm_0to1      DECIMAL,
+    ADD COLUMN IF NOT EXISTS skewness             DECIMAL,
+    ADD COLUMN IF NOT EXISTS kurtosis             DECIMAL,
+    ADD COLUMN IF NOT EXISTS spectral_centroid_hz DECIMAL;
