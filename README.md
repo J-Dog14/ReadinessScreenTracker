@@ -2,11 +2,11 @@
 
 A standalone Flask app for ingesting, scoring, and visualizing daily athlete readiness data from the Octane biomech readiness screen battery (CMJ, PPU, and isometric I/Y/T/IR90 tests).
 
-This app is **separate** from the main Octane biomech backend — it does not modify it — but reads from the same shared output folder (`D:\Athletic Screen 2.0\Output Files`) and writes to the same Neon Postgres warehouse.
+This app is **separate** from the main Octane biomech backend — it does not modify it — but reads from the same shared output folder (default `D:\Readiness Screen 3\Output Files`) and writes to the same Neon Postgres warehouse.
 
 ## What it does
 
-1. **Ingest** — point it at the Output Files folder; it parses the same `cmj_data.txt`, `ppu_data.txt`, `i_data.txt`, `y_data.txt`, `t_data.txt`, `ir90_data.txt`, and `Session.xml` the backend reads.
+1. **Ingest** — point it at the Output Files folder; it parses numbered trial files (`CMJ1.txt`, `CMJ2.txt`, `PPU1.txt`, etc.), isometric files (`i_data.txt`, `y_data.txt`, `t_data.txt`, `ir90_data.txt`), matching `*_Power.txt` files, and `Session.xml`.
 2. **Resolve athlete UUIDs** against `analytics.d_athletes` exactly the way the backend does (90% name similarity, period-as-comma normalization, source_athlete_id mapping).
 3. **Insert/upsert** rows into `f_readiness_screen_*` fact tables (existing schema, untouched).
 4. **Analyze power-velocity curves** when raw `*_Power.txt` files are present (RPD, FWHM, AUC, decay, skewness, spectral centroid — the same `power_analysis.py` toolkit used in athletic screen).
@@ -21,7 +21,7 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 copy .env.example .env          # Then edit .env with your DB URL
-python -m app.cli init-db       # Creates the two new tables
+python init_db.py               # Creates the two new tables
 python app.py                   # Starts Flask on http://127.0.0.1:5057
 ```
 

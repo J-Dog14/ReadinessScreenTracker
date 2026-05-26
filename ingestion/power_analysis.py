@@ -96,7 +96,7 @@ def analyze_power_curve(power: Union[np.ndarray, list], fs_hz: float = 1000.0) -
 
     a = max(0, onset_idx)
     b = min(n - 1, max(offset_idx, pk_idx))
-    auc = float(np.trapezoid(np.nan_to_num(p[a : b + 1], nan=0.0), dx=1.0 / fs_hz))
+    auc = float(np.trapz(np.nan_to_num(p[a : b + 1], nan=0.0), dx=1.0 / fs_hz))
 
     weights = np.clip(p[a : b + 1], a_min=0, a_max=None)
     if np.sum(weights) > 0:
@@ -141,8 +141,8 @@ def analyze_power_curve_advanced(power: Union[np.ndarray, list], fs_hz: float = 
     base["time_to_rpd_max_s"] = float(np.nanargmax(dp) / fs_hz)
 
     a, b, pk = base["onset_idx"], base["offset_idx"], base["peak_idx"]
-    auc_pre = float(np.trapezoid(np.nan_to_num(p[a : pk + 1], nan=0.0), dx=1.0 / fs_hz)) if pk >= a else np.nan
-    auc_post = float(np.trapezoid(np.nan_to_num(p[pk : b + 1], nan=0.0), dx=1.0 / fs_hz)) if b >= pk else np.nan
+    auc_pre = float(np.trapz(np.nan_to_num(p[a : pk + 1], nan=0.0), dx=1.0 / fs_hz)) if pk >= a else np.nan
+    auc_post = float(np.trapz(np.nan_to_num(p[pk : b + 1], nan=0.0), dx=1.0 / fs_hz)) if b >= pk else np.nan
     total = (0 if not np.isfinite(auc_pre) else auc_pre) + (0 if not np.isfinite(auc_post) else auc_post)
     base["auc_pre_j"] = auc_pre
     base["auc_post_j"] = auc_post

@@ -2,7 +2,7 @@
 -- These tables are NEW. They sit alongside the existing f_readiness_screen_*
 -- fact tables and do not modify them.
 --
--- Apply with: python -m app.cli init-db
+-- Apply with: python init_db.py
 -- Re-running is safe (CREATE TABLE IF NOT EXISTS).
 
 ------------------------------------------------------------------------------
