@@ -11,7 +11,8 @@
       "Bash(Sort-Object FullName)",
       "Bash(python tests/smoke_test.py)",
       "Bash(ls \"C:\\\\Users\\\\Joey\\\\.claude\\\\projects\\\\c--Users-Joey-PycharmProjects-Readiness-Screen-Tracker\\\\memory\\\\\")",
-      "Read(//c/Users/Joey/.claude/projects/c--Users-Joey-PycharmProjects-Readiness-Screen-Tracker/**)"
+      "Read(//c/Users/Joey/.claude/projects/c--Users-Joey-PycharmProjects-Readiness-Screen-Tracker/**)",
+      "Bash(python init_db.py)"
     ]
   }
 }
