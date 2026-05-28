@@ -9,6 +9,7 @@
     let selectedAthlete = null;
     let currentJobId = null;
     let currentEventSource = null;
+    let gripUnit = "kg";  // "kg" or "lbs"
 
     // ─── Mode toggle ───────────────────────────────────────────────────────
     $$("#mode-chips .chip").forEach((chip) => {
@@ -65,6 +66,59 @@
         }
     });
 
+    // ─── Grip unit toggle ─────────────────────────────────────────────────
+    $$("#grip-unit-chips .chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+            const newUnit = chip.dataset.unit;
+            if (newUnit === gripUnit) return;
+
+            // Convert current field values between units.
+            const LBS_PER_KG = 2.2046226;
+            ["grip-left", "grip-right"].forEach((id) => {
+                const input = $("#" + id);
+                if (input.value === "") return;
+                const v = parseFloat(input.value);
+                if (isNaN(v)) return;
+                if (newUnit === "lbs") {
+                    input.value = (v * LBS_PER_KG).toFixed(1);
+                } else {
+                    input.value = (v / LBS_PER_KG).toFixed(1);
+                }
+            });
+
+            $$("#grip-unit-chips .chip").forEach((c) => c.classList.remove("is-active"));
+            chip.classList.add("is-active");
+            gripUnit = newUnit;
+            updateGripDerived();
+        });
+    });
+
+    // ─── Grip derived display ─────────────────────────────────────────────
+    ["grip-left", "grip-right"].forEach((id) => {
+        $("#" + id).addEventListener("input", updateGripDerived);
+    });
+
+    function updateGripDerived() {
+        const LBS_PER_KG = 2.2046226;
+        const lRaw = parseFloat($("#grip-left").value);
+        const rRaw = parseFloat($("#grip-right").value);
+        const derived = $("#grip-derived");
+        if (isNaN(lRaw) && isNaN(rRaw)) { derived.style.display = "none"; return; }
+        const lKg = isNaN(lRaw) ? null : (gripUnit === "lbs" ? lRaw / LBS_PER_KG : lRaw);
+        const rKg = isNaN(rRaw) ? null : (gripUnit === "lbs" ? rRaw / LBS_PER_KG : rRaw);
+        if (lKg !== null && rKg !== null) {
+            const avg = (lKg + rKg) / 2;
+            const max = Math.max(lKg, rKg);
+            const asym = max > 0 ? (100 * Math.abs(lKg - rKg) / max).toFixed(1) : "0.0";
+            $("#grip-avg").textContent = avg.toFixed(1);
+            $("#grip-max").textContent = max.toFixed(1);
+            $("#grip-asym").textContent = asym;
+            derived.style.display = "";
+        } else {
+            derived.style.display = "none";
+        }
+    }
+
     // ─── Scan folder ───────────────────────────────────────────────────────
     $("#scan-btn").addEventListener("click", async () => {
         const dir = $("#output-dir").value.trim();
@@ -74,19 +128,31 @@
             const res = await fetch(`/api/scan?dir=${encodeURIComponent(dir)}`);
             const json = await res.json();
             const found = json.files || {};
-            $$("#file-grid .file-tile").forEach((tile) => {
+            // Update static tiles (Y, IR90).
+            $$('#file-grid .file-tile:not([data-dynamic])').forEach((tile) => {
                 const m = tile.dataset.movement;
+                if (!m) return;
                 const status = tile.querySelector(".status");
                 if (found[m]) {
-                    tile.classList.remove("missing");
-                    tile.classList.add("found");
-                    status.textContent = "found";
-                    status.style.color = "var(--accent-green)";
+                    tile.classList.remove("missing"); tile.classList.add("found");
+                    status.textContent = "found"; status.style.color = "var(--accent-green)";
                 } else {
-                    tile.classList.add("missing");
-                    tile.classList.remove("found");
-                    status.textContent = "not found";
-                    status.style.color = "";
+                    tile.classList.add("missing"); tile.classList.remove("found");
+                    status.textContent = "not found"; status.style.color = "";
+                }
+            });
+            // Update dynamic tiles (CMJ, PPU) — check for at least one matching key.
+            $$('#file-grid .file-tile[data-dynamic]').forEach((tile) => {
+                const m = tile.dataset.movement;
+                const status = tile.querySelector(".status");
+                const hasAny = Object.keys(found).some((k) => k.startsWith(m));
+                if (hasAny) {
+                    const count = Object.keys(found).filter((k) => k.startsWith(m)).length;
+                    tile.classList.remove("missing"); tile.classList.add("found");
+                    status.textContent = `${count} trial(s)`; status.style.color = "var(--accent-green)";
+                } else {
+                    tile.classList.add("missing"); tile.classList.remove("found");
+                    status.textContent = "not found"; status.style.color = "";
                 }
             });
         } catch (e) {
@@ -120,6 +186,29 @@
                 return;
             }
             body.athlete_uuid = selectedAthlete.athlete_uuid;
+        }
+
+        // Grip payload.
+        const LBS_PER_KG = 2.2046226;
+        const lRaw = $("#grip-left").value.trim();
+        const rRaw = $("#grip-right").value.trim();
+        const lVal = lRaw !== "" ? parseFloat(lRaw) : null;
+        const rVal = rRaw !== "" ? parseFloat(rRaw) : null;
+
+        if ((lVal !== null) !== (rVal !== null)) {
+            const missing = lVal === null ? "left" : "right";
+            if (!confirm(`Only the ${missing} hand was entered. Submit anyway with one hand missing?`)) {
+                return;
+            }
+        }
+        if (lVal !== null || rVal !== null) {
+            const toKg = (v) => v === null ? null : (gripUnit === "lbs" ? v / LBS_PER_KG : v);
+            body.grip = {
+                left_kg:       toKg(lVal),
+                right_kg:      toKg(rVal),
+                dominant_hand: $("#grip-dominant").value || null,
+                notes:         $("#grip-notes").value.trim() || null,
+            };
         }
 
         $("#run-btn").disabled = true;
@@ -216,11 +305,12 @@
                     <span class="badge ${badgeClass}">${band}</span>
                   </div>
                 </div>
-                <div class="row tight" style="margin-top: 0.6rem;">
+                <div class="row tight" style="margin-top: 0.6rem; flex-wrap: wrap;">
                   ${subZ("CMJ",  s.cmj_z)}
                   ${subZ("PPU",  s.ppu_z)}
                   ${subZ("Iso",  s.iso_z)}
                   ${subZ("Power", s.power_curve_z)}
+                  ${subZ("Grip",  s.grip_z)}
                 </div>
                 <div style="margin-top: 0.6rem;">
                   <a href="/dashboard?athlete=${encodeURIComponent(s.athlete_uuid)}" class="btn btn-ghost">View dashboard →</a>

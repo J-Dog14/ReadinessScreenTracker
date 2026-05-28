@@ -2,16 +2,18 @@
 End-to-end ingestion pipeline.
 
 Given an Output Files folder:
-  1. Parse the four ISO movement txt files (I, Y, T, IR90) — static filenames.
+  1. Parse the two active ISO movement txt files (Y, IR90) — static filenames.
+     I and T are kept in ISO_TABLE for historical queries but are no longer ingested.
   2. Parse CMJ/PPU trial files (CMJ1.txt, CMJ2.txt, PPU1.txt, …) — Athletic Screen format.
      For each trial:
        a. Parse 5-column summary data.
-       b. Load matching *_Power.txt and run full power-curve analysis.
-       c. Upsert row into f_readiness_screen_{cmj|ppu} with inline power metrics.
+       b. Load matching *_Power.txt and run full power-curve analysis (including phase metrics).
+       c. Upsert row into f_readiness_screen_{cmj|ppu} with inline power and phase metrics.
        d. Persist curve metrics to f_readiness_screen_power_curve (scoring reads from there).
-  3. Resolve athlete UUIDs — match-only, never create.
-  4. Update has_readiness_screen_data flag in d_athletes.
-  5. Compute composite readiness score.
+  3. Optionally upsert grip strength row from grip_payload (manual entry).
+  4. Resolve athlete UUIDs — match-only, never create.
+  5. Update has_readiness_screen_data flag in d_athletes.
+  6. Compute composite readiness score.
 """
 from __future__ import annotations
 
@@ -47,6 +49,7 @@ from .file_parsers import (
     peek_file_date,
 )
 from .power_analysis import analyze_power_curve_advanced, load_power_txt
+from .units import inches_to_meters
 from .scoring import score_session
 
 
@@ -68,6 +71,13 @@ POWER_CURVE_COLS = [
     "peak_power_w", "time_to_peak_s", "rpd_max_w_per_s", "time_to_rpd_max_s",
     "rise_time_10_90_s", "fwhm_s", "auc_j", "work_early_pct", "decay_90_10_s",
     "t_com_norm_0to1", "skewness", "kurtosis", "spectral_centroid_hz",
+]
+
+# Phase-analysis columns added in v2 — written to both CMJ/PPU and power_curve tables.
+PHASE_COLS = [
+    "contraction_time_s", "eccentric_duration_s", "concentric_duration_s",
+    "ecc_con_duration_ratio", "eccentric_mean_power_w", "eccentric_peak_power_w",
+    "eccentric_auc_j", "concentric_auc_j", "mrsi",
 ]
 
 
@@ -98,8 +108,13 @@ def run_ingestion(
     log: Callable[[str], None] = print,
     athlete_uuid_override: Optional[str] = None,
     cancel_event=None,
+    grip_payload: Optional[Dict] = None,
 ) -> Dict:
-    """Run the full pipeline against `output_dir`."""
+    """Run the full pipeline against `output_dir`.
+
+    grip_payload (optional): {left_kg, right_kg, dominant_hand, notes} for manual
+    grip-strength entry. When provided, upserts a row into f_readiness_screen_grip.
+    """
     summary: Dict = {
         "output_dir":       output_dir,
         "files_found":      {},
@@ -291,12 +306,19 @@ def run_ingestion(
 
                 # Load and analyse the matching Power.txt file.
                 power_metrics: Dict = {}
+                phase_metrics: Dict = {}
                 power_file = os.path.join(output_dir, f"{trial_name}_Power.txt")
                 if os.path.isfile(power_file):
                     try:
                         pw_arr = load_power_txt(power_file)
-                        pa = analyze_power_curve_advanced(pw_arr, fs_hz=fs_hz)
+                        jh_m = inches_to_meters(_safe(parsed.get("JH_IN")))
+                        pa = analyze_power_curve_advanced(
+                            pw_arr, fs_hz=fs_hz,
+                            jump_height_m=jh_m,
+                            movement_type=movement,
+                        )
                         power_metrics = {k: _safe(pa.get(k)) for k in POWER_CURVE_COLS}
+                        phase_metrics = {k: _safe(pa.get(k)) for k in PHASE_COLS}
                         _emit(log, "power", f"  {trial_name}: power curve analysed ({len(pw_arr)} samples)")
                     except Exception as pe:
                         _emit(log, "power", f"  {trial_name}: power analysis failed ({pe})")
@@ -325,12 +347,14 @@ def run_ingestion(
                     "force_at_pp":       _safe(parsed.get("Force_at_PP")),
                     "vel_at_pp":         _safe(parsed.get("Vel_at_PP")),
                     **power_metrics,
+                    **phase_metrics,
                 }
                 update_cols = [
                     "jump_height", "peak_power", "peak_force",
                     "pp_w_per_kg", "pp_forceplate", "force_at_pp", "vel_at_pp",
                     "age_at_collection", "age_group",
                     *POWER_CURVE_COLS,
+                    *PHASE_COLS,
                 ]
                 # Only update columns that exist in insert_data.
                 update_cols = [c for c in update_cols if c in insert_data]
@@ -354,12 +378,14 @@ def run_ingestion(
                 # Also write to f_readiness_screen_power_curve (scoring reads from it).
                 if power_metrics:
                     trial_id = _trial_id_from_name(trial_name)
-                    m_full = {**power_metrics}
-                    # analyze_power_curve_advanced returns more keys than POWER_CURVE_COLS;
-                    # _persist_power_curve needs source_file and fs_hz as well.
                     try:
                         pw_arr_full = load_power_txt(power_file)
-                        pa_full = analyze_power_curve_advanced(pw_arr_full, fs_hz=fs_hz)
+                        jh_m_full = inches_to_meters(_safe(parsed.get("JH_IN")))
+                        pa_full = analyze_power_curve_advanced(
+                            pw_arr_full, fs_hz=fs_hz,
+                            jump_height_m=jh_m_full,
+                            movement_type=movement,
+                        )
                         pa_full["source_file"] = power_file
                         pa_full["fs_hz"] = fs_hz
                         _persist_power_curve(athlete_uuid, date_str, movement, trial_id, pa_full)
@@ -370,6 +396,64 @@ def run_ingestion(
             except Exception as e:
                 conn.rollback()
                 msg = f"{trial_name} ({os.path.basename(file_path)}): {e}"
+                _emit(log, "ERROR", msg)
+                summary["errors"].append(msg)
+
+        # ================================================================
+        # Part 3: Grip strength (manual entry via grip_payload)
+        # ================================================================
+        if grip_payload and sessions_seen:
+            try:
+                left_kg  = grip_payload.get("left_kg")
+                right_kg = grip_payload.get("right_kg")
+                if left_kg is not None and right_kg is not None:
+                    left_kg  = float(left_kg)
+                    right_kg = float(right_kg)
+                    avg_kg        = (left_kg + right_kg) / 2.0
+                    max_kg        = max(left_kg, right_kg)
+                    asymmetry_pct = 100.0 * abs(left_kg - right_kg) / max_kg if max_kg > 0 else None
+
+                    # Use first athlete-session we resolved (grip is one row per session).
+                    grip_uuid, grip_date = next(iter(sessions_seen))
+                    age_at_collection, age_group, grip_date = _calc_age(grip_uuid, grip_date)
+                    resolved_name = athletes_meta.get(grip_uuid, "")
+                    src_id = extract_source_athlete_id(resolved_name)
+
+                    grip_data = {
+                        "athlete_uuid":      grip_uuid,
+                        "session_date":      grip_date,
+                        "source_system":     "readiness_screen",
+                        "source_athlete_id": src_id,
+                        "age_at_collection": age_at_collection,
+                        "age_group":         age_group,
+                        "left_kg":           left_kg,
+                        "right_kg":          right_kg,
+                        "avg_kg":            avg_kg,
+                        "max_kg":            max_kg,
+                        "asymmetry_pct":     asymmetry_pct,
+                        "dominant_hand":     grip_payload.get("dominant_hand"),
+                        "entry_source":      "manual",
+                        "notes":             grip_payload.get("notes"),
+                    }
+                    grip_update_cols = [
+                        "left_kg", "right_kg", "avg_kg", "max_kg", "asymmetry_pct",
+                        "dominant_hand", "entry_source", "notes",
+                        "age_at_collection", "age_group",
+                    ]
+                    verb = _upsert(
+                        conn, "f_readiness_screen_grip", grip_data, grip_update_cols,
+                        "athlete_uuid = %s AND session_date = %s",
+                        (grip_uuid, grip_date),
+                    )
+                    if verb == "inserted":
+                        summary["rows_inserted"] += 1
+                    else:
+                        summary["rows_updated"] += 1
+                    _emit(log, "upsert", f"  f_readiness_screen_grip: {verb} {grip_date} "
+                          f"(L={left_kg:.1f} R={right_kg:.1f} asym={asymmetry_pct:.1f}%)")
+            except Exception as ge:
+                conn.rollback()
+                msg = f"grip upsert failed: {ge}"
                 _emit(log, "ERROR", msg)
                 summary["errors"].append(msg)
 
@@ -518,36 +602,51 @@ def _persist_power_curve(athlete_uuid: str, date_str: str, movement: str,
                     n_samples, peak_power_w, time_to_peak_s, rise_time_10_90_s,
                     rise_slope_w_per_s, fwhm_s, auc_j, t_com_s, t_com_norm_0to1, cv_local_peak,
                     rpd_max_w_per_s, time_to_rpd_max_s, auc_pre_j, auc_post_j, work_early_pct,
-                    decay_90_10_s, skewness, kurtosis, spectral_centroid_hz
+                    decay_90_10_s, skewness, kurtosis, spectral_centroid_hz,
+                    contraction_time_s, eccentric_duration_s, concentric_duration_s,
+                    ecc_con_duration_ratio, eccentric_mean_power_w, eccentric_peak_power_w,
+                    eccentric_auc_j, concentric_auc_j, mrsi
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s
                 )
                 ON CONFLICT (athlete_uuid, session_date, movement_type, trial_id) DO UPDATE SET
-                    source_file          = EXCLUDED.source_file,
-                    fs_hz                = EXCLUDED.fs_hz,
-                    n_samples            = EXCLUDED.n_samples,
-                    peak_power_w         = EXCLUDED.peak_power_w,
-                    time_to_peak_s       = EXCLUDED.time_to_peak_s,
-                    rise_time_10_90_s    = EXCLUDED.rise_time_10_90_s,
-                    rise_slope_w_per_s   = EXCLUDED.rise_slope_w_per_s,
-                    fwhm_s               = EXCLUDED.fwhm_s,
-                    auc_j                = EXCLUDED.auc_j,
-                    t_com_s              = EXCLUDED.t_com_s,
-                    t_com_norm_0to1      = EXCLUDED.t_com_norm_0to1,
-                    cv_local_peak        = EXCLUDED.cv_local_peak,
-                    rpd_max_w_per_s      = EXCLUDED.rpd_max_w_per_s,
-                    time_to_rpd_max_s    = EXCLUDED.time_to_rpd_max_s,
-                    auc_pre_j            = EXCLUDED.auc_pre_j,
-                    auc_post_j           = EXCLUDED.auc_post_j,
-                    work_early_pct       = EXCLUDED.work_early_pct,
-                    decay_90_10_s        = EXCLUDED.decay_90_10_s,
-                    skewness             = EXCLUDED.skewness,
-                    kurtosis             = EXCLUDED.kurtosis,
-                    spectral_centroid_hz = EXCLUDED.spectral_centroid_hz
+                    source_file             = EXCLUDED.source_file,
+                    fs_hz                   = EXCLUDED.fs_hz,
+                    n_samples               = EXCLUDED.n_samples,
+                    peak_power_w            = EXCLUDED.peak_power_w,
+                    time_to_peak_s          = EXCLUDED.time_to_peak_s,
+                    rise_time_10_90_s       = EXCLUDED.rise_time_10_90_s,
+                    rise_slope_w_per_s      = EXCLUDED.rise_slope_w_per_s,
+                    fwhm_s                  = EXCLUDED.fwhm_s,
+                    auc_j                   = EXCLUDED.auc_j,
+                    t_com_s                 = EXCLUDED.t_com_s,
+                    t_com_norm_0to1         = EXCLUDED.t_com_norm_0to1,
+                    cv_local_peak           = EXCLUDED.cv_local_peak,
+                    rpd_max_w_per_s         = EXCLUDED.rpd_max_w_per_s,
+                    time_to_rpd_max_s       = EXCLUDED.time_to_rpd_max_s,
+                    auc_pre_j               = EXCLUDED.auc_pre_j,
+                    auc_post_j              = EXCLUDED.auc_post_j,
+                    work_early_pct          = EXCLUDED.work_early_pct,
+                    decay_90_10_s           = EXCLUDED.decay_90_10_s,
+                    skewness                = EXCLUDED.skewness,
+                    kurtosis                = EXCLUDED.kurtosis,
+                    spectral_centroid_hz    = EXCLUDED.spectral_centroid_hz,
+                    contraction_time_s      = EXCLUDED.contraction_time_s,
+                    eccentric_duration_s    = EXCLUDED.eccentric_duration_s,
+                    concentric_duration_s   = EXCLUDED.concentric_duration_s,
+                    ecc_con_duration_ratio  = EXCLUDED.ecc_con_duration_ratio,
+                    eccentric_mean_power_w  = EXCLUDED.eccentric_mean_power_w,
+                    eccentric_peak_power_w  = EXCLUDED.eccentric_peak_power_w,
+                    eccentric_auc_j         = EXCLUDED.eccentric_auc_j,
+                    concentric_auc_j        = EXCLUDED.concentric_auc_j,
+                    mrsi                    = EXCLUDED.mrsi
                 """,
                 (
                     athlete_uuid, date_str, movement, trial_id,
@@ -562,6 +661,11 @@ def _persist_power_curve(athlete_uuid: str, date_str: str, movement: str,
                     _safe(m.get("work_early_pct")), _safe(m.get("decay_90_10_s")),
                     _safe(m.get("skewness")), _safe(m.get("kurtosis")),
                     _safe(m.get("spectral_centroid_hz")),
+                    _safe(m.get("contraction_time_s")), _safe(m.get("eccentric_duration_s")),
+                    _safe(m.get("concentric_duration_s")), _safe(m.get("ecc_con_duration_ratio")),
+                    _safe(m.get("eccentric_mean_power_w")), _safe(m.get("eccentric_peak_power_w")),
+                    _safe(m.get("eccentric_auc_j")), _safe(m.get("concentric_auc_j")),
+                    _safe(m.get("mrsi")),
                 ),
             )
         conn.commit()

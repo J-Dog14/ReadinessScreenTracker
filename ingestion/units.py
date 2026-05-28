@@ -20,3 +20,9 @@ def kg_to_lbs(kg: Optional[float]) -> Optional[float]:
     if kg is None or kg <= 0:
         return None
     return kg * KG_TO_LBS
+
+
+def inches_to_meters(inches: Optional[float]) -> Optional[float]:
+    if inches is None or inches <= 0:
+        return None
+    return inches / METERS_TO_INCHES

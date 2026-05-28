@@ -119,3 +119,74 @@ ALTER TABLE public.f_readiness_screen_ppu
     ADD COLUMN IF NOT EXISTS skewness             DECIMAL,
     ADD COLUMN IF NOT EXISTS kurtosis             DECIMAL,
     ADD COLUMN IF NOT EXISTS spectral_centroid_hz DECIMAL;
+
+
+------------------------------------------------------------------------------
+-- V2 additions — grip strength, phase metrics, score column
+--   See BACKEND_READINESS_HANDOFF.md for Prisma schema counterparts.
+--   All idempotent (ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS).
+------------------------------------------------------------------------------
+
+-- New table: f_readiness_screen_grip
+CREATE TABLE IF NOT EXISTS public.f_readiness_screen_grip (
+    id                  SERIAL PRIMARY KEY,
+    athlete_uuid        VARCHAR(36) NOT NULL,
+    session_date        DATE        NOT NULL,
+    source_system       VARCHAR(64),
+    source_athlete_id   VARCHAR(64),
+    age_at_collection   NUMERIC,
+    age_group           VARCHAR(32),
+    left_kg             NUMERIC,
+    right_kg            NUMERIC,
+    avg_kg              NUMERIC,
+    max_kg              NUMERIC,
+    asymmetry_pct       NUMERIC,
+    dominant_hand       VARCHAR(8),
+    entry_source        VARCHAR(16),
+    notes               TEXT,
+    created_at          TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT uq_grip_athlete_session UNIQUE (athlete_uuid, session_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_grip_athlete ON public.f_readiness_screen_grip(athlete_uuid);
+CREATE INDEX IF NOT EXISTS idx_grip_session  ON public.f_readiness_screen_grip(session_date);
+
+-- Phase-analysis columns on CMJ
+ALTER TABLE public.f_readiness_screen_cmj
+    ADD COLUMN IF NOT EXISTS contraction_time_s        DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_duration_s      DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_duration_s     DECIMAL,
+    ADD COLUMN IF NOT EXISTS ecc_con_duration_ratio    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_mean_power_w    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_peak_power_w    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_auc_j           DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_auc_j          DECIMAL,
+    ADD COLUMN IF NOT EXISTS mrsi                      DECIMAL;
+
+-- Phase-analysis columns on PPU (eccentric cols kept for forward-compat; always NULL for still-start protocol)
+ALTER TABLE public.f_readiness_screen_ppu
+    ADD COLUMN IF NOT EXISTS contraction_time_s        DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_duration_s      DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_duration_s     DECIMAL,
+    ADD COLUMN IF NOT EXISTS ecc_con_duration_ratio    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_mean_power_w    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_peak_power_w    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_auc_j           DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_auc_j          DECIMAL,
+    ADD COLUMN IF NOT EXISTS mrsi                      DECIMAL;
+
+-- Phase-analysis columns on power_curve
+ALTER TABLE public.f_readiness_screen_power_curve
+    ADD COLUMN IF NOT EXISTS contraction_time_s        DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_duration_s      DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_duration_s     DECIMAL,
+    ADD COLUMN IF NOT EXISTS ecc_con_duration_ratio    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_mean_power_w    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_peak_power_w    DECIMAL,
+    ADD COLUMN IF NOT EXISTS eccentric_auc_j           DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_auc_j          DECIMAL,
+    ADD COLUMN IF NOT EXISTS mrsi                      DECIMAL;
+
+-- Grip group sub-score on score table
+ALTER TABLE public.f_readiness_screen_score
+    ADD COLUMN IF NOT EXISTS grip_z NUMERIC;

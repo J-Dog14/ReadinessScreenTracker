@@ -8,7 +8,10 @@
       "Bash(Select-Object FullName)",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Joey\\\\PycharmProjects\\\\OctaneBiomechBackend\\\\uais\\\\python\\\\readinessScreen\" -Recurse -Force)",
       "Bash(Select-Object -Property FullName, PSIsContainer)",
-      "Bash(Sort-Object FullName)"
+      "Bash(Sort-Object FullName)",
+      "Bash(python tests/smoke_test.py)",
+      "Bash(ls \"C:\\\\Users\\\\Joey\\\\.claude\\\\projects\\\\c--Users-Joey-PycharmProjects-Readiness-Screen-Tracker\\\\memory\\\\\")",
+      "Read(//c/Users/Joey/.claude/projects/c--Users-Joey-PycharmProjects-Readiness-Screen-Tracker/**)"
     ]
   }
 }

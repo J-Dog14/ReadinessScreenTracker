@@ -56,16 +56,25 @@ BAND_FATIGUED = 40
 # (table, column, sign) — sign +1 means higher_is_better, -1 means lower_is_better.
 # Sign is applied AFTER computing z; +1 → z stays, -1 → z is negated.
 CMJ_METRICS: List[Tuple[str, str, int]] = [
-    ("f_readiness_screen_cmj", "jump_height",  +1),
-    ("f_readiness_screen_cmj", "pp_w_per_kg",  +1),
-    ("f_readiness_screen_cmj", "force_at_pp",  +1),
-    ("f_readiness_screen_cmj", "vel_at_pp",    +1),
+    ("f_readiness_screen_cmj", "jump_height",          +1),
+    ("f_readiness_screen_cmj", "pp_w_per_kg",          +1),
+    ("f_readiness_screen_cmj", "force_at_pp",          +1),
+    ("f_readiness_screen_cmj", "vel_at_pp",            +1),
+    # v2 phase metrics
+    ("f_readiness_screen_cmj", "mrsi",                 +1),
+    ("f_readiness_screen_cmj", "contraction_time_s",   -1),  # longer = fatigued
+    ("f_readiness_screen_cmj", "ecc_con_duration_ratio", -1),  # rises with fatigue
+    # eccentric_mean_power_w is negative; more negative (faster braking) = better → sign -1
+    ("f_readiness_screen_cmj", "eccentric_mean_power_w", -1),
 ]
 PPU_METRICS: List[Tuple[str, str, int]] = [
-    ("f_readiness_screen_ppu", "jump_height",  +1),
-    ("f_readiness_screen_ppu", "pp_w_per_kg",  +1),
-    ("f_readiness_screen_ppu", "force_at_pp",  +1),
-    ("f_readiness_screen_ppu", "vel_at_pp",    +1),
+    ("f_readiness_screen_ppu", "jump_height",          +1),
+    ("f_readiness_screen_ppu", "pp_w_per_kg",          +1),
+    ("f_readiness_screen_ppu", "force_at_pp",          +1),
+    ("f_readiness_screen_ppu", "vel_at_pp",            +1),
+    # v2 phase metrics — eccentric metrics omitted (still-start protocol, always NULL)
+    ("f_readiness_screen_ppu", "mrsi",                 +1),
+    ("f_readiness_screen_ppu", "contraction_time_s",   -1),
 ]
 
 # Athletic screen supplemental sources (read-only).
@@ -88,15 +97,20 @@ _ATHLETIC_POWER_COLS: frozenset = frozenset({
     "auc_j", "decay_90_10_s", "t_com_norm_0to1",
     "skewness", "kurtosis", "spectral_centroid_hz",
 })
+# I and T removed in v2 (lower throwing-specific signal). Historical rows in
+# f_readiness_screen_i and f_readiness_screen_t remain queryable but are not scored.
 ISO_METRICS: List[Tuple[str, str, int]] = [
-    ("f_readiness_screen_i",    "max_force",    +1),
     ("f_readiness_screen_y",    "max_force",    +1),
-    ("f_readiness_screen_t",    "max_force",    +1),
     ("f_readiness_screen_ir90", "max_force",    +1),
-    ("f_readiness_screen_i",    "time_to_max",  -1),  # faster = better
     ("f_readiness_screen_y",    "time_to_max",  -1),
-    ("f_readiness_screen_t",    "time_to_max",  -1),
     ("f_readiness_screen_ir90", "time_to_max",  -1),
+]
+
+GRIP_METRICS: List[Tuple[str, str, int]] = [
+    ("f_readiness_screen_grip", "left_kg",       +1),
+    ("f_readiness_screen_grip", "right_kg",      +1),
+    ("f_readiness_screen_grip", "max_kg",        +1),
+    ("f_readiness_screen_grip", "asymmetry_pct", -1),  # higher asymmetry = worse
 ]
 POWER_CURVE_METRICS: List[Tuple[str, str, int]] = [
     ("f_readiness_screen_power_curve", "peak_power_w",       +1),
@@ -255,6 +269,93 @@ def _flag(z: float) -> str:
     return "stable"
 
 
+def compute_intra_session_cv(
+    athlete_uuid: str,
+    session_date: date,
+    baseline_days: int = DEFAULT_BASELINE_DAYS,
+) -> Dict:
+    """Compute intra-session coefficient of variation across the 2 CMJ/PPU trials.
+
+    For each of: cmj.jump_height, cmj.mrsi, cmj.peak_power_w,
+                 ppu.jump_height, ppu.mrsi, ppu.peak_power_w:
+      1. Load the individual trial values for today.
+      2. Compute today_cv = sd([trial1, trial2]) / mean([trial1, trial2]).
+      3. Compare to rolling baseline mean CV (same window).
+      4. Flag "elevated" when today_cv > 2× baseline_mean_cv.
+
+    Returns {label: {today_cv, baseline_mean_cv, flag, n_trials}}.
+    """
+    cv_metrics = [
+        ("f_readiness_screen_cmj", "jump_height"),
+        ("f_readiness_screen_cmj", "mrsi"),
+        ("f_readiness_screen_cmj", "peak_power_w"),
+        ("f_readiness_screen_ppu", "jump_height"),
+        ("f_readiness_screen_ppu", "mrsi"),
+        ("f_readiness_screen_ppu", "peak_power_w"),
+    ]
+    cutoff = session_date - timedelta(days=baseline_days)
+    result: Dict = {}
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for table, col in cv_metrics:
+                label = _label(table, col)
+                try:
+                    cur.execute(
+                        f"SELECT {col} FROM public.{table}"
+                        f" WHERE athlete_uuid = %s AND session_date = %s"
+                        f"   AND {col} IS NOT NULL",
+                        (athlete_uuid, session_date),
+                    )
+                    today_vals = [r[0] for r in cur.fetchall() if r[0] is not None]
+                    if len(today_vals) < 2:
+                        continue
+
+                    n = len(today_vals)
+                    mean_v = sum(today_vals) / n
+                    if mean_v == 0:
+                        continue
+                    sd_v = math.sqrt(sum((x - mean_v) ** 2 for x in today_vals) / (n - 1))
+                    today_cv = sd_v / abs(mean_v)
+
+                    # Baseline: compute per-session CVs over rolling window.
+                    cur.execute(
+                        f"""
+                        SELECT session_date,
+                               STDDEV({col}) / NULLIF(ABS(AVG({col})), 0) AS cv
+                          FROM public.{table}
+                         WHERE athlete_uuid = %s
+                           AND session_date < %s
+                           AND session_date >= %s
+                           AND {col} IS NOT NULL
+                         GROUP BY session_date
+                        HAVING COUNT(*) >= 2
+                        """,
+                        (athlete_uuid, session_date, cutoff),
+                    )
+                    baseline_cvs = [r[1] for r in cur.fetchall() if r[1] is not None]
+                    baseline_mean_cv = (sum(baseline_cvs) / len(baseline_cvs)) if baseline_cvs else None
+
+                    if baseline_mean_cv is not None and baseline_mean_cv > 0:
+                        flag = "elevated" if today_cv > 2.0 * baseline_mean_cv else "stable"
+                    else:
+                        flag = "stable"
+
+                    result[label] = {
+                        "today_cv":        round(today_cv, 4),
+                        "baseline_mean_cv": round(baseline_mean_cv, 4) if baseline_mean_cv is not None else None,
+                        "flag":            flag,
+                        "n_trials":        n,
+                    }
+                except Exception:
+                    pass
+    finally:
+        conn.close()
+
+    return result
+
+
 def compute_score_for_session(
     athlete_uuid: str,
     session_date: date,
@@ -266,10 +367,11 @@ def compute_score_for_session(
     Caller is responsible for upserting into f_readiness_screen_score.
     """
     groups = {
-        "cmj": CMJ_METRICS,
-        "ppu": PPU_METRICS,
-        "iso": ISO_METRICS,
+        "cmj":         CMJ_METRICS,
+        "ppu":         PPU_METRICS,
+        "iso":         ISO_METRICS,
         "power_curve": POWER_CURVE_METRICS,
+        "grip":        GRIP_METRICS,
     }
 
     per_metric: Dict[str, dict] = {}
@@ -286,25 +388,35 @@ def compute_score_for_session(
                     )
                     if today is None:
                         continue  # no data today, skip
+                    label = _label(table, col)
+                    if len(baseline) < MIN_HISTORY:
+                        per_metric[label] = {
+                            "today":      round(today, 4),
+                            "flag":       "insufficient_history",
+                            "n_history":  len(baseline),
+                            "sign":       sign,
+                        }
+                        continue
                     z_result = _zscore(today, baseline)
                     if z_result is None:
                         continue
                     z, mean, sd = z_result
                     z_signed = sign * z
-                    label = _label(table, col)
                     per_metric[label] = {
-                        "today":   round(today, 4),
-                        "mean":    round(mean, 4),
-                        "sd":      round(sd, 4),
-                        "z":       round(z_signed, 3),
-                        "flag":    _flag(z_signed),
+                        "today":     round(today, 4),
+                        "mean":      round(mean, 4),
+                        "sd":        round(sd, 4),
+                        "z":         round(z_signed, 3),
+                        "flag":      _flag(z_signed),
                         "n_history": len(baseline),
-                        "sign":    sign,
+                        "sign":      sign,
                     }
                     group_zs[group_name].append(z_signed)
                     all_zs.append(z_signed)
     finally:
         conn.close()
+
+    intra_session = compute_intra_session_cv(athlete_uuid, session_date, baseline_days)
 
     if not all_zs:
         return {
@@ -315,9 +427,14 @@ def compute_score_for_session(
             "ppu_z": None,
             "iso_z": None,
             "power_curve_z": None,
+            "grip_z": None,
             "metrics_used": 0,
             "baseline_window_days": baseline_days,
-            "flags_json": json.dumps({"per_metric": {}, "note": "Need ≥3 historical sessions in at least one metric."}),
+            "flags_json": json.dumps({
+                "per_metric": per_metric,
+                "intra_session": intra_session,
+                "note": "Need ≥3 historical sessions in at least one metric.",
+            }),
         }
 
     composite_z = sum(all_zs) / len(all_zs)
@@ -335,9 +452,10 @@ def compute_score_for_session(
         "ppu_z": _g_avg(group_zs["ppu"]),
         "iso_z": _g_avg(group_zs["iso"]),
         "power_curve_z": _g_avg(group_zs["power_curve"]),
+        "grip_z": _g_avg(group_zs["grip"]),
         "metrics_used": len(all_zs),
         "baseline_window_days": baseline_days,
-        "flags_json": json.dumps({"per_metric": per_metric}),
+        "flags_json": json.dumps({"per_metric": per_metric, "intra_session": intra_session}),
     }
 
 
@@ -350,9 +468,9 @@ def upsert_score(athlete_uuid: str, session_date: date, score_dict: Dict) -> Non
                 """
                 INSERT INTO public.f_readiness_screen_score
                     (athlete_uuid, session_date, composite_score, composite_z, band,
-                     cmj_z, ppu_z, iso_z, power_curve_z,
+                     cmj_z, ppu_z, iso_z, power_curve_z, grip_z,
                      metrics_used, baseline_window_days, flags_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (athlete_uuid, session_date) DO UPDATE SET
                     composite_score      = EXCLUDED.composite_score,
                     composite_z          = EXCLUDED.composite_z,
@@ -361,6 +479,7 @@ def upsert_score(athlete_uuid: str, session_date: date, score_dict: Dict) -> Non
                     ppu_z                = EXCLUDED.ppu_z,
                     iso_z                = EXCLUDED.iso_z,
                     power_curve_z        = EXCLUDED.power_curve_z,
+                    grip_z               = EXCLUDED.grip_z,
                     metrics_used         = EXCLUDED.metrics_used,
                     baseline_window_days = EXCLUDED.baseline_window_days,
                     flags_json           = EXCLUDED.flags_json
@@ -375,6 +494,7 @@ def upsert_score(athlete_uuid: str, session_date: date, score_dict: Dict) -> Non
                     score_dict["ppu_z"],
                     score_dict["iso_z"],
                     score_dict["power_curve_z"],
+                    score_dict.get("grip_z"),
                     score_dict["metrics_used"],
                     score_dict["baseline_window_days"],
                     score_dict["flags_json"],

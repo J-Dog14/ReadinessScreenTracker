@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 from scipy import stats
@@ -131,8 +131,171 @@ def analyze_power_curve(power: Union[np.ndarray, list], fs_hz: float = 1000.0) -
     }
 
 
-def analyze_power_curve_advanced(power: Union[np.ndarray, list], fs_hz: float = 1000.0) -> dict:
-    """Adds RPD, work distribution, decay, shape stats, and spectral centroid."""
+def detect_phases(
+    power_array: Union[np.ndarray, list],
+    fs_hz: float = 1000.0,
+    movement_type: str = "CMJ",
+) -> Dict:
+    """Detect onset, eccentric-concentric split, peak, and takeoff indices.
+
+    For CMJ: onset is where |power| first exceeds the threshold; bottom is the
+    last zero-crossing (negative→positive) before the global peak, marking the
+    eccentric→concentric transition; takeoff is the first near-zero sample after peak.
+
+    For PPU (still-start, no eccentric phase): onset is where positive power
+    first exceeds the threshold; bottom is set equal to onset (no eccentric);
+    peak and takeoff are detected normally.
+
+    Returns {onset_idx, bottom_idx, peak_idx, takeoff_idx}. All indices may be
+    None if the signal is degenerate.
+    """
+    p = np.asarray(power_array, dtype=float)
+    n = p.size
+    if n < 10:
+        return {"onset_idx": None, "bottom_idx": None, "peak_idx": None, "takeoff_idx": None}
+
+    try:
+        peak_abs = float(np.nanmax(np.abs(p)))
+        if peak_abs < 1e-6:
+            return {"onset_idx": None, "bottom_idx": None, "peak_idx": None, "takeoff_idx": None}
+
+        onset_threshold = max(5.0, 0.02 * peak_abs)
+
+        if movement_type == "PPU":
+            # Onset: first sample where positive power exceeds threshold
+            pos_mask = p > onset_threshold
+            onset_idx = int(np.argmax(pos_mask)) if np.any(pos_mask) else None
+            if onset_idx is None:
+                return {"onset_idx": None, "bottom_idx": None, "peak_idx": None, "takeoff_idx": None}
+            bottom_idx = onset_idx  # no eccentric phase
+        else:
+            # CMJ: onset uses absolute power
+            abs_mask = np.abs(p) > onset_threshold
+            onset_idx = int(np.argmax(abs_mask)) if np.any(abs_mask) else None
+            if onset_idx is None:
+                return {"onset_idx": None, "bottom_idx": None, "peak_idx": None, "takeoff_idx": None}
+
+            # Peak (positive)
+            pk_idx = int(np.nanargmax(p))
+
+            # Bottom: last zero-crossing (negative→positive) before peak.
+            # Scan backwards from peak for the last index where p transitions
+            # from negative to positive (sign change: p[i] < 0 and p[i+1] >= 0).
+            bottom_idx = onset_idx  # fallback if no zero-crossing found
+            for i in range(pk_idx - 1, onset_idx, -1):
+                if p[i] < 0 and p[i + 1] >= 0:
+                    bottom_idx = i + 1
+                    break
+
+        peak_idx = int(np.nanargmax(p))
+
+        # Takeoff: first sample after peak where |power| drops below onset_threshold
+        post_peak = p[peak_idx:]
+        near_zero = np.abs(post_peak) < onset_threshold
+        if np.any(near_zero):
+            takeoff_rel = int(np.argmax(near_zero))
+            takeoff_idx = peak_idx + takeoff_rel
+        else:
+            takeoff_idx = n - 1
+
+        return {
+            "onset_idx":   onset_idx,
+            "bottom_idx":  bottom_idx,
+            "peak_idx":    peak_idx,
+            "takeoff_idx": takeoff_idx,
+        }
+    except Exception:
+        return {"onset_idx": None, "bottom_idx": None, "peak_idx": None, "takeoff_idx": None}
+
+
+def analyze_phase_metrics(
+    power_array: Union[np.ndarray, list],
+    fs_hz: float = 1000.0,
+    jump_height_m: Optional[float] = None,
+    movement_type: str = "CMJ",
+) -> Dict:
+    """Compute phase-level metrics from a power-time signal.
+
+    Returns a 9-key dict. For PPU (still-start protocol) all eccentric fields
+    are None because bottom_idx == onset_idx. All fields return None gracefully
+    on degenerate signals.
+    """
+    null_result = {
+        "contraction_time_s":     None,
+        "eccentric_duration_s":   None,
+        "concentric_duration_s":  None,
+        "ecc_con_duration_ratio": None,
+        "eccentric_mean_power_w": None,
+        "eccentric_peak_power_w": None,
+        "eccentric_auc_j":        None,
+        "concentric_auc_j":       None,
+        "mrsi":                   None,
+    }
+
+    try:
+        phases = detect_phases(power_array, fs_hz, movement_type)
+        onset_idx   = phases["onset_idx"]
+        bottom_idx  = phases["bottom_idx"]
+        peak_idx    = phases["peak_idx"]
+        takeoff_idx = phases["takeoff_idx"]
+
+        if any(v is None for v in (onset_idx, bottom_idx, peak_idx, takeoff_idx)):
+            return null_result
+
+        p = np.asarray(power_array, dtype=float)
+
+        contraction_time_s = (takeoff_idx - onset_idx) / fs_hz
+        concentric_duration_s = (takeoff_idx - bottom_idx) / fs_hz
+
+        if concentric_duration_s <= 0:
+            return null_result
+
+        # Eccentric phase exists only when bottom_idx > onset_idx + a few samples
+        has_eccentric = bottom_idx > onset_idx + 5
+        if has_eccentric:
+            eccentric_duration_s   = (bottom_idx - onset_idx) / fs_hz
+            ecc_seg = p[onset_idx:bottom_idx]
+            eccentric_mean_power_w = float(np.mean(ecc_seg))
+            eccentric_peak_power_w = float(np.min(ecc_seg))  # most negative
+            eccentric_auc_j = float(abs(np.trapz(ecc_seg, dx=1.0 / fs_hz)))
+            ecc_con_duration_ratio = eccentric_duration_s / concentric_duration_s
+        else:
+            eccentric_duration_s   = None
+            eccentric_mean_power_w = None
+            eccentric_peak_power_w = None
+            eccentric_auc_j        = None
+            ecc_con_duration_ratio = None
+
+        con_seg = p[bottom_idx:takeoff_idx]
+        concentric_auc_j = float(np.trapz(con_seg, dx=1.0 / fs_hz))
+
+        if jump_height_m is not None and contraction_time_s > 0:
+            mrsi = jump_height_m / contraction_time_s
+        else:
+            mrsi = None
+
+        return {
+            "contraction_time_s":     contraction_time_s,
+            "eccentric_duration_s":   eccentric_duration_s,
+            "concentric_duration_s":  concentric_duration_s,
+            "ecc_con_duration_ratio": ecc_con_duration_ratio,
+            "eccentric_mean_power_w": eccentric_mean_power_w,
+            "eccentric_peak_power_w": eccentric_peak_power_w,
+            "eccentric_auc_j":        eccentric_auc_j,
+            "concentric_auc_j":       concentric_auc_j,
+            "mrsi":                   mrsi,
+        }
+    except Exception:
+        return null_result
+
+
+def analyze_power_curve_advanced(
+    power: Union[np.ndarray, list],
+    fs_hz: float = 1000.0,
+    jump_height_m: Optional[float] = None,
+    movement_type: str = "CMJ",
+) -> dict:
+    """Adds RPD, work distribution, decay, shape stats, spectral centroid, and phase metrics."""
     base = analyze_power_curve(power, fs_hz)
     p = np.asarray(power, dtype=float)
 
@@ -163,6 +326,9 @@ def analyze_power_curve_advanced(power: Union[np.ndarray, list], fs_hz: float = 
     X = np.abs(np.fft.rfft(np.nan_to_num(x)))
     freqs = np.fft.rfftfreq(x.size, d=1.0 / fs_hz)
     base["spectral_centroid_hz"] = float(np.sum(freqs * X) / max(1e-12, np.sum(X)))
+
+    phase = analyze_phase_metrics(power, fs_hz, jump_height_m=jump_height_m, movement_type=movement_type)
+    base.update(phase)
 
     return base
 
@@ -196,10 +362,11 @@ def analyze_session_power_files(
 ) -> List[dict]:
     """For every *_Power.txt belonging to `movement`, compute curve metrics. Skips files we can't read."""
     results = []
+    mvt_upper = movement.upper()
     for path in find_power_files(power_dir, movement):
         try:
             arr = load_power_txt(path)
-            metrics = analyze_power_curve_advanced(arr, fs_hz=fs_hz)
+            metrics = analyze_power_curve_advanced(arr, fs_hz=fs_hz, movement_type=mvt_upper)
             metrics["source_file"] = path
             results.append(metrics)
         except Exception as e:  # bad/short file — skip but keep going

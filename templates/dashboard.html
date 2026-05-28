@@ -45,7 +45,7 @@
     <div class="col">
       <h2 style="margin-bottom: 0.5rem;">Composite readiness</h2>
       <div class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.75rem;">
-        Score = clip(50 + 15 × mean z, 0..100). Bands: ≥60 READY · 40–60 CAUTION · &lt;40 FATIGUED.
+        Score = clip(50 + 15 × mean z, 0..100). Bands: ≥60 Train · 40–60 Monitor · &lt;40 Modify.
       </div>
       <div class="stat-grid" id="sub-stats"></div>
     </div>
@@ -54,11 +54,34 @@
   <div id="score-history" style="margin-top: 1rem; height: 220px;"></div>
 </section>
 
+<!-- Today vs Baseline -->
+<section class="card" id="tvb-card">
+  <h2>Today vs Baseline</h2>
+  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">Each bar is today's z-score. Hover for raw value, baseline mean, and SD.</p>
+  <div id="tvb-plot" style="height: 420px;"></div>
+</section>
+
 <!-- Row 1: Isometric -->
 <section class="card">
-  <h2>Isometric (I / Y / T / IR90) — Avg Force</h2>
+  <div class="row" style="align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+    <h2 style="margin-bottom: 0;">Isometric — Y &amp; IR90</h2>
+    <label style="font-size: 0.82rem; cursor: pointer; user-select: none;">
+      <input type="checkbox" id="iso-legacy-toggle" style="margin-right: 0.3rem;">
+      Show historical (I, T)
+    </label>
+  </div>
   <div id="iso-plot" style="height: 320px;"></div>
   <div class="stat-grid" id="iso-stats" style="margin-top: 0.75rem;"></div>
+</section>
+
+<!-- Row 1.5: Grip strength -->
+<section class="card" id="grip-card">
+  <h2>Grip Strength</h2>
+  <div class="row" style="gap: 1rem;">
+    <div class="col" style="min-width: 380px;"><div id="grip-ts-plot" style="height: 280px;"></div></div>
+    <div class="col" style="min-width: 260px;"><div id="grip-asym-plot" style="height: 280px;"></div></div>
+  </div>
+  <div class="stat-grid" id="grip-stats" style="margin-top: 0.75rem;"></div>
 </section>
 
 <!-- Row 2: CMJ -->
@@ -71,6 +94,18 @@
   <div class="stat-grid" id="cmj-stats" style="margin-top: 0.75rem;"></div>
 </section>
 
+<!-- Row 2.5: Movement Strategy — CMJ -->
+<section class="card">
+  <h2>Movement Strategy — CMJ</h2>
+  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">mRSI, contraction time, eccentric:concentric ratio, and eccentric mean power trend over time.</p>
+  <div class="row" style="gap: 0.75rem; flex-wrap: wrap;">
+    <div style="flex:1; min-width: 240px;"><div id="cmj-mrsi-plot"   style="height: 220px;"></div></div>
+    <div style="flex:1; min-width: 240px;"><div id="cmj-ct-plot"     style="height: 220px;"></div></div>
+    <div style="flex:1; min-width: 240px;"><div id="cmj-ecccon-plot" style="height: 220px;"></div></div>
+    <div style="flex:1; min-width: 240px;"><div id="cmj-eccpow-plot" style="height: 220px;"></div></div>
+  </div>
+</section>
+
 <!-- Row 3: PPU -->
 <section class="card">
   <h2>Plyo Push-Up</h2>
@@ -81,6 +116,23 @@
   <div class="stat-grid" id="ppu-stats" style="margin-top: 0.75rem;"></div>
 </section>
 
+<!-- Row 3.5: Movement Strategy — PPU (mRSI + contraction time only) -->
+<section class="card">
+  <h2>Movement Strategy — PPU</h2>
+  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">Still-start protocol — concentric metrics only.</p>
+  <div class="row" style="gap: 0.75rem; flex-wrap: wrap;">
+    <div style="flex:1; min-width: 280px;"><div id="ppu-mrsi-plot" style="height: 220px;"></div></div>
+    <div style="flex:1; min-width: 280px;"><div id="ppu-ct-plot"   style="height: 220px;"></div></div>
+  </div>
+</section>
+
+<!-- Trial Consistency -->
+<section class="card">
+  <h2>Trial Consistency</h2>
+  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">Trial-to-trial variability within a session. Elevated CV is an early fatigue signal.</p>
+  <div id="trial-consistency-plot" style="height: 360px;"></div>
+</section>
+
 <!-- Row 4: Power-curve trends -->
 <section class="card">
   <h2>Power-curve trends</h2>
@@ -88,6 +140,15 @@
     Derived from each session's raw power-time signal. Higher peak / RPD / rise-slope / AUC and lower rise time → better neuromuscular state.
   </p>
   <div id="power-plot" style="height: 380px;"></div>
+</section>
+
+<!-- Flag heatmap -->
+<section class="card">
+  <h2>Metric Flag Heatmap — last 14 sessions</h2>
+  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">Read left→right: which metrics have been dropping. Read top→bottom: today's full pattern.</p>
+  <div id="heatmap-container" class="heatmap-scroll">
+    <div id="heatmap-inner"></div>
+  </div>
 </section>
 {% endblock %}
 

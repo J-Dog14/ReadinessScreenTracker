@@ -101,6 +101,16 @@ def run():
             body_text = msg
         job.events.put({"type": "log", "stage": stage, "msg": body_text})
 
+    grip_raw = body.get("grip") or {}
+    grip_payload = None
+    if grip_raw.get("left_kg") or grip_raw.get("right_kg"):
+        grip_payload = {
+            "left_kg":      grip_raw.get("left_kg"),
+            "right_kg":     grip_raw.get("right_kg"),
+            "dominant_hand": grip_raw.get("dominant_hand") or None,
+            "notes":         grip_raw.get("notes") or None,
+        }
+
     def worker():
         try:
             summary = run_ingestion(
@@ -110,6 +120,7 @@ def run():
                 log=log,
                 athlete_uuid_override=athlete_uuid,
                 cancel_event=job.cancelled,
+                grip_payload=grip_payload,
             )
             job.summary = summary
         except Exception as e:

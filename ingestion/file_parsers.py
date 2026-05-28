@@ -18,10 +18,10 @@ from .units import meters_to_inches, kg_to_lbs
 
 # Static file mapping for isometric force movements only.
 # CMJ and PPU are now discovered dynamically as CMJ1.txt, PPU1.txt, etc.
+# I and T were removed in v2 (lower throwing-specific signal); their tables are
+# preserved for historical queries but no longer ingested.
 ASCII_FILES = {
-    "I":    "i_data.txt",
     "Y":    "y_data.txt",
-    "T":    "t_data.txt",
     "IR90": "ir90_data.txt",
 }
 

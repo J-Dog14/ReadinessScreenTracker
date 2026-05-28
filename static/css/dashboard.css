@@ -17,3 +17,45 @@
 .score-gauge.band-ready    .gauge-band { color: #4ade80; }
 .score-gauge.band-caution  .gauge-band { color: #facc15; }
 .score-gauge.band-fatigued .gauge-band { color: #f87171; }
+
+/* ── Flag heatmap ────────────────────────────────────────────────────────── */
+.heatmap-scroll {
+    overflow-x: auto;
+}
+.heatmap-table {
+    border-collapse: collapse;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+.heatmap-table th,
+.heatmap-table td {
+    border: 1px solid #1e2837;
+    padding: 0;
+}
+.heatmap-metric-label {
+    padding: 2px 6px !important;
+    text-align: right;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    min-width: 140px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.heatmap-date {
+    padding: 2px 4px !important;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    min-width: 48px;
+}
+.heatmap-cell {
+    width: 48px;
+    height: 22px;
+    cursor: default;
+}
+
+/* ── Grip card — hide when no data ──────────────────────────────────────── */
+#grip-card {
+    display: none;
+}

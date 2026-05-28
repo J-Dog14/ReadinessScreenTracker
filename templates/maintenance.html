@@ -6,11 +6,11 @@
 {% block content %}
 <h1>Readiness Screen — Maintenance</h1>
 <p class="text-muted" style="margin-top:0;">
-  Point at an Output Files folder. The app parses the six movement txt files,
-  resolves athletes against <code>analytics.d_athletes</code>, upserts into
-  the existing <code>f_readiness_screen_*</code> tables, runs power-curve
-  analysis on any matching <code>*_Power.txt</code> files, and computes the
-  composite readiness score.
+  Point at an Output Files folder. The app parses <strong>Y, IR90, CMJ, and PPU</strong>
+  movement files, resolves athletes against <code>analytics.d_athletes</code>, upserts into
+  the existing <code>f_readiness_screen_*</code> tables, runs power-curve and phase-metric
+  analysis on any matching <code>*_Power.txt</code> files, and computes the composite
+  readiness score.
 </p>
 
 <!-- ─── Athlete picker ──────────────────────────────────────────────────── -->
@@ -69,6 +69,82 @@
       <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
     </div>
     {% endfor %}
+    <!-- CMJ and PPU tiles — discovered dynamically; JS adds them after scan -->
+    <div class="file-tile missing" data-movement="CMJ" data-dynamic="1">
+      <span class="label">CMJ</span>
+      <span class="name">CMJ*.txt</span>
+      <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
+    </div>
+    <div class="file-tile missing" data-movement="PPU" data-dynamic="1">
+      <span class="label">PPU</span>
+      <span class="name">PPU*.txt</span>
+      <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
+    </div>
+  </div>
+
+  <!-- Legacy tests — kept for historical reference only; no longer ingested -->
+  <details style="margin-top: 1rem;">
+    <summary class="text-muted" style="font-size: 0.82rem; cursor: pointer;">Legacy tests (I, T) — historical data only, not ingested</summary>
+    <div class="file-grid" style="margin-top: 0.6rem; opacity: 0.5;">
+      <div class="file-tile missing">
+        <span class="label">I</span>
+        <span class="name">i_data.txt</span>
+        <span class="status text-muted" style="font-size: 0.75rem;">legacy — not collected</span>
+      </div>
+      <div class="file-tile missing">
+        <span class="label">T</span>
+        <span class="name">t_data.txt</span>
+        <span class="status text-muted" style="font-size: 0.75rem;">legacy — not collected</span>
+      </div>
+    </div>
+  </details>
+</section>
+
+<!-- ─── Grip strength ────────────────────────────────────────────────────── -->
+<section class="card">
+  <h2>3. Grip Strength <span class="text-muted" style="font-size: 0.8rem; font-weight: 400;">(optional — manual entry)</span></h2>
+  <p class="text-muted" style="font-size: 0.88rem; margin-top: 0; margin-bottom: 0.85rem;">
+    Enter the max value from 3 reps per hand. Leave blank if not collected today.
+  </p>
+
+  <div class="row" style="align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
+    <div>
+      <label class="field-label">Left hand</label>
+      <div class="row tight" style="gap: 0.25rem;">
+        <input id="grip-left" class="input mono" type="number" step="0.1" min="0" placeholder="—" style="width: 90px;">
+      </div>
+    </div>
+    <div>
+      <label class="field-label">Right hand</label>
+      <div class="row tight" style="gap: 0.25rem;">
+        <input id="grip-right" class="input mono" type="number" step="0.1" min="0" placeholder="—" style="width: 90px;">
+      </div>
+    </div>
+    <div>
+      <label class="field-label">Unit</label>
+      <div class="chip-group" id="grip-unit-chips" style="margin-bottom: 0;">
+        <div class="chip is-active" data-unit="kg">kg</div>
+        <div class="chip" data-unit="lbs">lbs</div>
+      </div>
+    </div>
+    <div>
+      <label class="field-label">Dominant hand</label>
+      <select id="grip-dominant" class="input" style="width: 130px;">
+        <option value="">Not specified</option>
+        <option value="R">Right</option>
+        <option value="L">Left</option>
+      </select>
+    </div>
+    <div style="flex: 1; min-width: 180px;">
+      <label class="field-label">Notes</label>
+      <input id="grip-notes" class="input" type="text" placeholder="Optional…" style="width: 100%;">
+    </div>
+  </div>
+
+  <div id="grip-derived" class="text-muted" style="margin-top: 0.6rem; font-size: 0.82rem; display: none;">
+    Avg: <strong id="grip-avg">—</strong> kg &nbsp;·&nbsp;
+    Max: <strong id="grip-max">—</strong> kg &nbsp;·&nbsp;
+    Asymmetry: <strong id="grip-asym">—</strong>%
   </div>
 </section>
 
@@ -76,7 +152,7 @@
 <section class="card">
   <div class="row" style="align-items:center; justify-content:space-between;">
     <div>
-      <h2 style="margin-bottom: 0.25rem;">3. Run ingestion</h2>
+      <h2 style="margin-bottom: 0.25rem;">4. Run ingestion</h2>
       <div class="text-muted" style="font-size:0.88rem;">Parses → upserts fact rows → analyzes power curves → computes score.</div>
     </div>
     <div class="row tight">
