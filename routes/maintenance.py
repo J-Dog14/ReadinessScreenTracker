@@ -20,7 +20,7 @@ from flask import Blueprint, Response, jsonify, render_template, request, stream
 
 from config import get_output_dir, get_power_dir, get_power_sample_rate_hz
 from ingestion.athlete_manager import search_athletes
-from ingestion.file_parsers import ASCII_FILES, discover_txt_files
+from ingestion.file_parsers import ASCII_FILES, discover_cmj_ppu_trials, discover_txt_files, extract_name
 from ingestion.pipeline import run_ingestion
 
 bp = Blueprint("maintenance", __name__)
@@ -74,7 +74,20 @@ def scan():
     if not output_dir:
         return jsonify({"error": "dir required"}), 400
     found = discover_txt_files(output_dir)
-    return jsonify({"dir": output_dir, "files": {k: v for k, v in found.items()}})
+    for trial in discover_cmj_ppu_trials(output_dir):
+        found[trial["trial_name"]] = trial["file_path"]
+
+    files_out = {}
+    for movement, file_path in found.items():
+        athlete_name = None
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+                athlete_name = extract_name(fh.readline())
+        except OSError:
+            pass
+        files_out[movement] = {"path": file_path, "athlete_name": athlete_name}
+
+    return jsonify({"dir": output_dir, "files": files_out})
 
 
 # ─── Run ────────────────────────────────────────────────────────────────────
@@ -193,4 +206,7 @@ def athlete_search():
     q = request.args.get("q", "").strip()
     if not q or len(q) < 2:
         return jsonify({"results": []})
-    return jsonify({"results": search_athletes(q)})
+    try:
+        return jsonify({"results": search_athletes(q)})
+    except Exception:
+        return jsonify({"results": []})

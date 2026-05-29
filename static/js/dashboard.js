@@ -2,14 +2,64 @@
 (() => {
     "use strict";
 
-    const sel = document.getElementById("athlete-select");
-    if (!sel) return;
-    sel.addEventListener("change", () => render(sel.value));
-    if (window.__INITIAL_UUID__) {
-        render(window.__INITIAL_UUID__);
-    } else if (sel.value) {
-        render(sel.value);
+    // ─── Athlete filter (type-to-search) ─────────────────────────────────
+    const filterInput = document.getElementById("athlete-filter");
+    const dropdown = document.getElementById("athlete-dropdown");
+    const athletes = window.__ATHLETES__ || [];
+    let activeUuid = window.__INITIAL_UUID__ || (athletes[0] ? athletes[0].athlete_uuid : null);
+
+    function escapeHtml(s) {
+        if (s == null) return "";
+        return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
     }
+
+    function showDropdown(list) {
+        if (!dropdown) return;
+        dropdown.innerHTML = "";
+        list.forEach((a) => {
+            const div = document.createElement("div");
+            div.className = "item";
+            div.innerHTML = `${escapeHtml(a.name)}${a.age_group ? ` <span class="age-tag">${escapeHtml(a.age_group)}</span>` : ""}`;
+            div.addEventListener("click", () => {
+                activeUuid = a.athlete_uuid;
+                if (filterInput) filterInput.value = a.name;
+                dropdown.style.display = "none";
+                render(activeUuid);
+            });
+            dropdown.appendChild(div);
+        });
+        dropdown.style.display = list.length ? "block" : "none";
+    }
+
+    if (filterInput) {
+        filterInput.addEventListener("input", () => {
+            const q = filterInput.value.toLowerCase().trim();
+            if (!q) { dropdown.style.display = "none"; return; }
+            const hits = athletes.filter((a) =>
+                a.name.toLowerCase().includes(q) ||
+                (a.age_group || "").toLowerCase().includes(q)
+            );
+            showDropdown(hits);
+        });
+        filterInput.addEventListener("focus", () => {
+            const q = filterInput.value.toLowerCase().trim();
+            if (q) {
+                const hits = athletes.filter((a) =>
+                    a.name.toLowerCase().includes(q) ||
+                    (a.age_group || "").toLowerCase().includes(q)
+                );
+                showDropdown(hits);
+            }
+        });
+    }
+
+    document.addEventListener("click", (e) => {
+        if (dropdown && !e.target.closest(".search-dropdown")) {
+            dropdown.style.display = "none";
+        }
+    });
+
+    if (activeUuid) render(activeUuid);
 
     // ISO legacy toggle re-renders iso panel when toggled.
     const isoToggle = document.getElementById("iso-legacy-toggle");

@@ -24,7 +24,7 @@ def get_output_dir() -> str:
     """Folder containing cmj_data.txt, ppu_data.txt, i_data.txt, etc."""
     return os.getenv(
         "READINESS_SCREEN_OUTPUT_DIR",
-        "D:/Athletic Screen 2.0/Output Files",
+        "D:/Athletic Screen 2.0/Output Files/Readiness Output Files",
     )
 
 

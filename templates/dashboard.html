@@ -12,16 +12,16 @@
 <div class="row" style="align-items:flex-end; margin-bottom: 1rem; gap: 1rem;">
   <div class="col" style="max-width: 420px;">
     <label class="field-label">Athlete</label>
-    <select id="athlete-select" class="input">
-      {% if not athletes %}
-        <option value="">No athletes with readiness data yet — run an ingestion first.</option>
-      {% endif %}
-      {% for a in athletes %}
-        <option value="{{ a.athlete_uuid }}" {% if a.athlete_uuid == selected_uuid %}selected{% endif %}>
-          {{ a.name }}{% if a.age_group %} — {{ a.age_group }}{% endif %}
-        </option>
-      {% endfor %}
-    </select>
+    {% if not athletes %}
+      <div class="text-muted" style="font-size: 0.88rem;">No athletes with readiness data yet — run an ingestion first.</div>
+    {% else %}
+    <div class="search-dropdown">
+      <input id="athlete-filter" class="input" type="text" autocomplete="off"
+             placeholder="Type to filter athletes…"
+             value="{{ athletes | selectattr('athlete_uuid','equalto',selected_uuid) | map(attribute='name') | first | default('') }}">
+      <div id="athlete-dropdown" class="results" style="display:none;"></div>
+    </div>
+    {% endif %}
   </div>
   <div class="text-muted" style="font-size: 0.85rem;">
     Composite z-score against the athlete's own rolling 28-day baseline.
@@ -155,6 +155,7 @@
 {% block scripts %}
 <script>
   window.__INITIAL_UUID__ = {{ selected_uuid|tojson }};
+  window.__ATHLETES__ = {{ athletes|tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 {% endblock %}

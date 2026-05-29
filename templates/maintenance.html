@@ -67,6 +67,7 @@
       <span class="label">{{ movement }}</span>
       <span class="name">{{ fname }}</span>
       <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
+      <span class="athlete-name text-muted" style="font-size: 0.75rem; display:block;"></span>
     </div>
     {% endfor %}
     <!-- CMJ and PPU tiles — discovered dynamically; JS adds them after scan -->
@@ -74,11 +75,13 @@
       <span class="label">CMJ</span>
       <span class="name">CMJ*.txt</span>
       <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
+      <span class="athlete-name text-muted" style="font-size: 0.75rem; display:block;"></span>
     </div>
     <div class="file-tile missing" data-movement="PPU" data-dynamic="1">
       <span class="label">PPU</span>
       <span class="name">PPU*.txt</span>
       <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
+      <span class="athlete-name text-muted" style="font-size: 0.75rem; display:block;"></span>
     </div>
   </div>
 
@@ -122,10 +125,7 @@
     </div>
     <div>
       <label class="field-label">Unit</label>
-      <div class="chip-group" id="grip-unit-chips" style="margin-bottom: 0;">
-        <div class="chip is-active" data-unit="kg">kg</div>
-        <div class="chip" data-unit="lbs">lbs</div>
-      </div>
+      <div class="text-muted" style="line-height: 2; font-size: 0.88rem;">lbs</div>
     </div>
     <div>
       <label class="field-label">Dominant hand</label>

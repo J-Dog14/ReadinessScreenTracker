@@ -9,7 +9,7 @@
     let selectedAthlete = null;
     let currentJobId = null;
     let currentEventSource = null;
-    let gripUnit = "kg";  // "kg" or "lbs"
+    let gripUnit = "lbs";
 
     // ─── Mode toggle ───────────────────────────────────────────────────────
     $$("#mode-chips .chip").forEach((chip) => {
@@ -52,6 +52,9 @@
                         $("#athlete-search").value = a.name;
                         $("#athlete-selected").innerHTML = `Selected: <strong>${escapeHtml(a.name)}</strong> <span class="mono text-muted">${a.athlete_uuid}</span>`;
                         box.style.display = "none";
+                        if (a.dominant_hand) {
+                            $("#grip-dominant").value = a.dominant_hand;
+                        }
                     });
                     box.appendChild(div);
                 });
@@ -64,33 +67,6 @@
         if (!e.target.closest(".search-dropdown")) {
             $("#athlete-results").style.display = "none";
         }
-    });
-
-    // ─── Grip unit toggle ─────────────────────────────────────────────────
-    $$("#grip-unit-chips .chip").forEach((chip) => {
-        chip.addEventListener("click", () => {
-            const newUnit = chip.dataset.unit;
-            if (newUnit === gripUnit) return;
-
-            // Convert current field values between units.
-            const LBS_PER_KG = 2.2046226;
-            ["grip-left", "grip-right"].forEach((id) => {
-                const input = $("#" + id);
-                if (input.value === "") return;
-                const v = parseFloat(input.value);
-                if (isNaN(v)) return;
-                if (newUnit === "lbs") {
-                    input.value = (v * LBS_PER_KG).toFixed(1);
-                } else {
-                    input.value = (v / LBS_PER_KG).toFixed(1);
-                }
-            });
-
-            $$("#grip-unit-chips .chip").forEach((c) => c.classList.remove("is-active"));
-            chip.classList.add("is-active");
-            gripUnit = newUnit;
-            updateGripDerived();
-        });
     });
 
     // ─── Grip derived display ─────────────────────────────────────────────
@@ -120,41 +96,53 @@
     }
 
     // ─── Scan folder ───────────────────────────────────────────────────────
+    async function doScan(dir) {
+        const res = await fetch(`/api/scan?dir=${encodeURIComponent(dir)}`);
+        const json = await res.json();
+        const found = json.files || {};
+        // Update static tiles (Y, IR90).
+        $$('#file-grid .file-tile:not([data-dynamic])').forEach((tile) => {
+            const m = tile.dataset.movement;
+            if (!m) return;
+            const status = tile.querySelector(".status");
+            const nameSpan = tile.querySelector(".athlete-name");
+            if (found[m]) {
+                tile.classList.remove("missing"); tile.classList.add("found");
+                status.textContent = "found"; status.style.color = "var(--accent-green)";
+                if (nameSpan) nameSpan.textContent = found[m].athlete_name || "";
+            } else {
+                tile.classList.add("missing"); tile.classList.remove("found");
+                status.textContent = "not found"; status.style.color = "";
+                if (nameSpan) nameSpan.textContent = "";
+            }
+        });
+        // Update dynamic tiles (CMJ, PPU) — check for at least one matching key.
+        $$('#file-grid .file-tile[data-dynamic]').forEach((tile) => {
+            const m = tile.dataset.movement;
+            const status = tile.querySelector(".status");
+            const nameSpan = tile.querySelector(".athlete-name");
+            const matches = Object.keys(found).filter((k) => k.startsWith(m));
+            if (matches.length) {
+                tile.classList.remove("missing"); tile.classList.add("found");
+                status.textContent = `${matches.length} trial(s)`; status.style.color = "var(--accent-green)";
+                // Show athlete name from first matching trial (they should all be the same athlete).
+                const first = found[matches[0]];
+                if (nameSpan) nameSpan.textContent = first?.athlete_name || "";
+            } else {
+                tile.classList.add("missing"); tile.classList.remove("found");
+                status.textContent = "not found"; status.style.color = "";
+                if (nameSpan) nameSpan.textContent = "";
+            }
+        });
+        return found;
+    }
+
     $("#scan-btn").addEventListener("click", async () => {
         const dir = $("#output-dir").value.trim();
         if (!dir) return;
         $("#scan-btn").disabled = true;
         try {
-            const res = await fetch(`/api/scan?dir=${encodeURIComponent(dir)}`);
-            const json = await res.json();
-            const found = json.files || {};
-            // Update static tiles (Y, IR90).
-            $$('#file-grid .file-tile:not([data-dynamic])').forEach((tile) => {
-                const m = tile.dataset.movement;
-                if (!m) return;
-                const status = tile.querySelector(".status");
-                if (found[m]) {
-                    tile.classList.remove("missing"); tile.classList.add("found");
-                    status.textContent = "found"; status.style.color = "var(--accent-green)";
-                } else {
-                    tile.classList.add("missing"); tile.classList.remove("found");
-                    status.textContent = "not found"; status.style.color = "";
-                }
-            });
-            // Update dynamic tiles (CMJ, PPU) — check for at least one matching key.
-            $$('#file-grid .file-tile[data-dynamic]').forEach((tile) => {
-                const m = tile.dataset.movement;
-                const status = tile.querySelector(".status");
-                const hasAny = Object.keys(found).some((k) => k.startsWith(m));
-                if (hasAny) {
-                    const count = Object.keys(found).filter((k) => k.startsWith(m)).length;
-                    tile.classList.remove("missing"); tile.classList.add("found");
-                    status.textContent = `${count} trial(s)`; status.style.color = "var(--accent-green)";
-                } else {
-                    tile.classList.add("missing"); tile.classList.remove("found");
-                    status.textContent = "not found"; status.style.color = "";
-                }
-            });
+            await doScan(dir);
         } catch (e) {
             alert("Scan failed: " + e);
         } finally {
@@ -173,6 +161,11 @@
         if (!outputDir) {
             alert("Set the output folder path first.");
             return;
+        }
+
+        // In auto mode, scan first so tiles show athlete names before the run begins.
+        if (mode === "auto") {
+            try { await doScan(outputDir); } catch (_) { /* non-fatal */ }
         }
 
         const body = {

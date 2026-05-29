@@ -273,20 +273,47 @@ def call_update_athlete_data_flags() -> None:
 
 
 def search_athletes(query: str, limit: int = 25):
-    """Substring search for the maintenance page's existing-athlete picker."""
+    """Substring search for the maintenance page's existing-athlete picker.
+
+    Attempts to include the athlete's most-recent dominant_hand from
+    f_readiness_screen_grip. Falls back to the simpler query if that table
+    doesn't exist yet (pre-migration).
+    """
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT athlete_uuid, name, age_group
-                FROM analytics.d_athletes
-                WHERE name ILIKE %s OR normalized_name ILIKE %s
-                ORDER BY name
-                LIMIT %s
-                """,
-                (f"%{query}%", f"%{query.upper()}%", limit),
-            )
+            try:
+                cur.execute(
+                    """
+                    SELECT a.athlete_uuid, a.name, a.age_group, g.dominant_hand
+                    FROM analytics.d_athletes a
+                    LEFT JOIN LATERAL (
+                        SELECT dominant_hand
+                        FROM analytics.f_readiness_screen_grip
+                        WHERE athlete_uuid = a.athlete_uuid
+                          AND dominant_hand IS NOT NULL
+                        ORDER BY session_date DESC
+                        LIMIT 1
+                    ) g ON true
+                    WHERE a.name ILIKE %s OR a.normalized_name ILIKE %s
+                    ORDER BY a.name
+                    LIMIT %s
+                    """,
+                    (f"%{query}%", f"%{query.upper()}%", limit),
+                )
+            except Exception:
+                # Grip table not yet migrated — fall back to simple query.
+                conn.rollback()
+                cur.execute(
+                    """
+                    SELECT athlete_uuid, name, age_group
+                    FROM analytics.d_athletes
+                    WHERE name ILIKE %s OR normalized_name ILIKE %s
+                    ORDER BY name
+                    LIMIT %s
+                    """,
+                    (f"%{query}%", f"%{query.upper()}%", limit),
+                )
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
