@@ -248,3 +248,28 @@ ALTER TABLE public.f_readiness_screen_ppu
   rfd_0_100ms            Decimal?
   concentric_impulse_ns  Decimal?
 ```
+
+---
+
+## 3-Tier Scoring — `scoring_tier` column
+
+Adds a scoring tier label to `f_readiness_screen_score` so the dashboard can show athletes
+which comparison method was used for their score (peer vs. prior session vs. personal rolling).
+
+### SQL
+
+```sql
+-- Values: FIRST_RUN | A_TO_B | READINESS
+-- NULL for pre-migration rows (treated as READINESS in the UI).
+ALTER TABLE public.f_readiness_screen_score
+    ADD COLUMN IF NOT EXISTS scoring_tier VARCHAR(16);
+```
+
+### Prisma addition
+
+```prisma
+model f_readiness_screen_score {
+  // ... existing fields ...
+  scoring_tier  String?  @db.VarChar(16)
+}
+```

@@ -96,7 +96,7 @@
         }
 
         renderScore(data);
-        renderTodayVsBaseline(data.today_vs_baseline || []);
+        renderTodayVsBaseline(data.today_vs_baseline || [], data.latest_score?.scoring_tier);
         _isoData = data.iso;
         renderIso(data.iso);
         renderGrip(data.grip);
@@ -137,6 +137,19 @@
             const circumference = 2 * Math.PI * 84;
             const filled = (score / 100) * circumference;
             arc.setAttribute("stroke-dasharray", `${filled} ${circumference}`);
+        }
+
+        const tierBadge = document.getElementById("gauge-tier-badge");
+        if (tierBadge) {
+            const tier = latest && latest.scoring_tier;
+            const tierLabels = { FIRST_RUN: "Peer Comparison", A_TO_B: "vs. Last Session" };
+            const label = tier ? (tierLabels[tier] || null) : null;
+            if (label) {
+                tierBadge.textContent = label;
+                tierBadge.style.display = "";
+            } else {
+                tierBadge.style.display = "none";
+            }
         }
 
         renderSubStats(latest);
@@ -204,7 +217,7 @@
     }
 
     // ─── Today vs Baseline ────────────────────────────────────────────────
-    function renderTodayVsBaseline(metrics) {
+    function renderTodayVsBaseline(metrics, scoringTier) {
         const el = document.getElementById("tvb-plot");
         if (!metrics || !metrics.length) {
             el.innerHTML = `<div class="text-muted" style="padding: 1rem 0; font-size: 0.85rem;">No data for today yet.</div>`;
@@ -217,9 +230,11 @@
             m.flag === "rise" ? "#4ade80" :
             m.flag === "drop" ? "#f87171" : "#2c99d4"
         );
+        const baselineLabel = scoringTier === "FIRST_RUN" ? "Peer mean:" :
+                              scoringTier === "A_TO_B"    ? "Prior session:" : "Baseline mean:";
         const hovertext = sorted.map((m) =>
             `${m.label}<br>Today: ${formatNum(m.today)}<br>` +
-            `Baseline mean: ${formatNum(m.mean)}<br>` +
+            `${baselineLabel} ${formatNum(m.mean)}<br>` +
             `SD: ${formatNum(m.sd)}<br>` +
             `z: ${m.z != null ? m.z.toFixed(3) : "—"}<br>` +
             `n history: ${m.n_history}`

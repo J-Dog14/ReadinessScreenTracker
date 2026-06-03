@@ -216,7 +216,7 @@ def _score_history(cur, uuid: str) -> List[Dict]:
         """
         SELECT session_date, composite_score, composite_z, band,
                cmj_z, ppu_z, iso_z, power_curve_z, grip_z,
-               metrics_used, flags_json
+               metrics_used, flags_json, scoring_tier
           FROM public.f_readiness_screen_score
          WHERE athlete_uuid = %s
          ORDER BY session_date
@@ -236,6 +236,7 @@ def _score_history(cur, uuid: str) -> List[Dict]:
             "grip_z":          float(r["grip_z"]) if r["grip_z"] is not None else None,
             "metrics_used":    r["metrics_used"],
             "flags":           r["flags_json"],
+            "scoring_tier":    r["scoring_tier"],
         }
         for r in cur.fetchall()
     ]

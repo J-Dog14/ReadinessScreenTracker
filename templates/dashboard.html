@@ -24,7 +24,7 @@
     {% endif %}
   </div>
   <div class="text-muted" style="font-size: 0.85rem;">
-    Composite z-score against the athlete's own rolling 28-day baseline.
+    Session 1: peer comparison · Session 2: vs. last session · Session 3+: personal 28-day baseline.
   </div>
 </div>
 
@@ -40,6 +40,7 @@
       </svg>
       <div class="gauge-num" id="gauge-num">—</div>
       <div class="gauge-band" id="gauge-band">No score yet</div>
+      <div class="gauge-tier-badge" id="gauge-tier-badge" style="display:none;"></div>
     </div>
 
     <div class="col">
@@ -57,7 +58,7 @@
 <!-- Today vs Baseline -->
 <section class="card" id="tvb-card">
   <h2>Today vs Baseline</h2>
-  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">Each bar is today's z-score. Hover for raw value, baseline mean, and SD.</p>
+  <p class="text-muted" style="margin-top:0; font-size:0.88rem;">Each bar is today's z-score. Hover for raw value, comparison reference, and SD.</p>
   <div id="tvb-plot" style="height: 420px;"></div>
 </section>
 

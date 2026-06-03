@@ -18,6 +18,18 @@
 .score-gauge.band-caution  .gauge-band { color: #facc15; }
 .score-gauge.band-fatigued .gauge-band { color: #f87171; }
 
+.gauge-tier-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(44, 153, 212, 0.15);
+    color: #8be9fd;
+    margin-top: 4px;
+}
+
 /* ── Flag heatmap ────────────────────────────────────────────────────────── */
 .heatmap-scroll {
     overflow-x: auto;

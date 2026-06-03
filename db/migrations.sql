@@ -122,6 +122,15 @@ ALTER TABLE public.f_readiness_screen_ppu
 
 
 ------------------------------------------------------------------------------
+------------------------------------------------------------------------------
+-- 3-tier scoring tier column
+--   FIRST_RUN | A_TO_B | READINESS
+--   NULL preserved for pre-migration rows.
+------------------------------------------------------------------------------
+ALTER TABLE public.f_readiness_screen_score
+    ADD COLUMN IF NOT EXISTS scoring_tier VARCHAR(16);
+
+
 -- V2 additions — grip strength, phase metrics, score column
 --   See BACKEND_READINESS_HANDOFF.md for Prisma schema counterparts.
 --   All idempotent (ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS).
