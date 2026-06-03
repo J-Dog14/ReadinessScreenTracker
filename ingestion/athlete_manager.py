@@ -87,17 +87,15 @@ def _name_similarity(a: str, b: str) -> float:
 
 
 def extract_source_athlete_id(name: str) -> str:
-    """Backend's extract_source_athlete_id — trailing UPPER initials -> id, else clean name.
+    """Return the athlete's name with trailing initials stripped.
 
     Handles both space-separated ('Trevor Cleveland TC') and underscore-separated
-    ('Trevor Cleveland_TC') initials so file-path names are normalised consistently.
+    ('Trevor Cleveland_TC') initials, returning 'Trevor Cleveland' in both cases.
     """
     if not name or not name.strip():
         return name
-    m = re.search(r"[\s_]+([A-Z]{2,3})\s*$", name)
-    if m:
-        return m.group(1)
-    return name
+    cleaned = re.sub(r"[\s_]+[A-Z]{2,3}\s*$", "", name.strip())
+    return cleaned.strip() if cleaned.strip() else name.strip()
 
 
 # ---------------------------------------------------------------------------

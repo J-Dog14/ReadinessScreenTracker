@@ -316,11 +316,14 @@ def _movement_strategy(cur, uuid: str) -> Dict[str, List[Dict]]:
         cur.execute(
             f"""
             SELECT session_date,
-                   AVG(mrsi)::float                    AS mrsi,
-                   AVG(contraction_time_s)::float      AS contraction_time_s,
-                   AVG(ecc_con_duration_ratio)::float  AS ecc_con_duration_ratio,
-                   AVG(eccentric_mean_power_w)::float  AS eccentric_mean_power_w,
-                   AVG(concentric_duration_s)::float   AS concentric_duration_s
+                   AVG(mrsi)::float                     AS mrsi,
+                   AVG(contraction_time_s)::float       AS contraction_time_s,
+                   AVG(ecc_con_duration_ratio)::float   AS ecc_con_duration_ratio,
+                   AVG(eccentric_mean_power_w)::float   AS eccentric_mean_power_w,
+                   AVG(concentric_duration_s)::float    AS concentric_duration_s,
+                   AVG(peak_grf_bw_ratio)::float        AS peak_grf_bw_ratio,
+                   AVG(rfd_0_100ms)::float              AS rfd_0_100ms,
+                   AVG(concentric_impulse_ns)::float    AS concentric_impulse_ns
               FROM public.{table}
              WHERE athlete_uuid = %s
                AND mrsi IS NOT NULL
@@ -331,12 +334,15 @@ def _movement_strategy(cur, uuid: str) -> Dict[str, List[Dict]]:
         )
         out[kind] = [
             {
-                "date":                 r["session_date"].isoformat() if r["session_date"] else None,
-                "mrsi":                 r["mrsi"],
-                "contraction_time_s":   r["contraction_time_s"],
+                "date":                   r["session_date"].isoformat() if r["session_date"] else None,
+                "mrsi":                   r["mrsi"],
+                "contraction_time_s":     r["contraction_time_s"],
                 "ecc_con_duration_ratio": r["ecc_con_duration_ratio"],
                 "eccentric_mean_power_w": r["eccentric_mean_power_w"],
                 "concentric_duration_s":  r["concentric_duration_s"],
+                "peak_grf_bw_ratio":      r["peak_grf_bw_ratio"],
+                "rfd_0_100ms":            r["rfd_0_100ms"],
+                "concentric_impulse_ns":  r["concentric_impulse_ns"],
             }
             for r in cur.fetchall()
         ]

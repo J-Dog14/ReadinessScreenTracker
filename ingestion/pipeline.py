@@ -23,6 +23,8 @@ import sys
 from datetime import date, datetime
 from typing import Callable, Dict, List, Optional
 
+import numpy as np
+
 from db.connection import get_connection
 from .age_utils import (
     calculate_age_at_collection,
@@ -48,7 +50,11 @@ from .file_parsers import (
     parse_txt_file,
     peek_file_date,
 )
-from .power_analysis import analyze_power_curve_advanced, load_power_txt
+from .power_analysis import (
+    analyze_phase_metrics_from_force,
+    analyze_power_curve_advanced,
+    load_power_txt,
+)
 from .units import inches_to_meters
 from .scoring import score_session
 
@@ -78,6 +84,11 @@ PHASE_COLS = [
     "contraction_time_s", "eccentric_duration_s", "concentric_duration_s",
     "ecc_con_duration_ratio", "eccentric_mean_power_w", "eccentric_peak_power_w",
     "eccentric_auc_j", "concentric_auc_j", "mrsi",
+]
+
+# Force-derived columns added in v2.1 — written to CMJ/PPU tables only.
+FORCE_COLS = [
+    "peak_grf_n", "peak_grf_bw_ratio", "rfd_0_100ms", "concentric_impulse_ns",
 ]
 
 
@@ -244,6 +255,7 @@ def run_ingestion(
                     "time_to_max":       parsed.get("Time_to_Max"),
                 }
                 update_cols = [
+                    "source_athlete_id",
                     "avg_force", "avg_force_norm", "max_force", "max_force_norm",
                     "time_to_max", "age_at_collection", "age_group",
                 ]
@@ -269,6 +281,27 @@ def run_ingestion(
         # ================================================================
         # Part 2: CMJ/PPU trials — Athletic Screen style
         # ================================================================
+
+        # Pre-estimate body weight from the first available CMJ Force file.
+        # PPU quiet standing ≠ full BW (upper body only on plate), so BW must
+        # come from a CMJ trial.  Used by analyze_phase_metrics_from_force.
+        athlete_body_weight_n: Optional[float] = None
+        for _t in cmj_ppu_trials:
+            if _t["movement_type"] == "CMJ":
+                _cf = os.path.join(power_dir, f"{_t['trial_name']}_Force.txt")
+                if os.path.isfile(_cf):
+                    try:
+                        _fa = load_power_txt(_cf)
+                        _qn = max(10, int(0.05 * fs_hz))
+                        athlete_body_weight_n = float(np.mean(_fa[:_qn]))
+                        _emit(log, "power",
+                              f"  BW estimated from {_t['trial_name']}_Force.txt: "
+                              f"{athlete_body_weight_n:.1f} N "
+                              f"({athlete_body_weight_n / 9.81:.1f} kg)")
+                    except Exception:
+                        pass
+                    break
+
         for trial in cmj_ppu_trials:
             movement   = trial["movement_type"]
             trial_name = trial["trial_name"]
@@ -307,7 +340,8 @@ def run_ingestion(
                 # Load and analyse the matching Power.txt file.
                 power_metrics: Dict = {}
                 phase_metrics: Dict = {}
-                power_file = os.path.join(output_dir, f"{trial_name}_Power.txt")
+                force_metrics: Dict = {}
+                power_file = os.path.join(power_dir, f"{trial_name}_Power.txt")
                 if os.path.isfile(power_file):
                     try:
                         pw_arr = load_power_txt(power_file)
@@ -325,6 +359,26 @@ def run_ingestion(
                 else:
                     _emit(log, "power", f"  {trial_name}: no Power.txt found — skipping curve")
 
+                # Force file: overrides phase_metrics with GRF-derived values.
+                # The Force.txt covers the full trial (quiet standing + eccentric + concentric)
+                # so eccentric columns can be computed.  Reuses load_power_txt — same format.
+                force_file = os.path.join(power_dir, f"{trial_name}_Force.txt")
+                if os.path.isfile(force_file):
+                    try:
+                        frc_arr = load_power_txt(force_file)
+                        jh_m_f = inches_to_meters(_safe(parsed.get("JH_IN")))
+                        fp = analyze_phase_metrics_from_force(
+                            frc_arr, fs_hz=fs_hz,
+                            jump_height_m=jh_m_f,
+                            movement_type=movement,
+                            body_weight_n=athlete_body_weight_n,
+                        )
+                        phase_metrics = {k: _safe(fp.get(k)) for k in PHASE_COLS}
+                        force_metrics = {k: _safe(fp.get(k)) for k in FORCE_COLS}
+                        _emit(log, "power", f"  {trial_name}: force phase metrics computed ({len(frc_arr)} samples)")
+                    except Exception as fe:
+                        _emit(log, "power", f"  {trial_name}: force phase analysis failed ({fe})")
+
                 table  = CMJ_PPU_TABLE[movement]
                 # When UUID override is active the file-path name may belong to a
                 # different person. Use the resolved athlete's display name instead.
@@ -337,6 +391,7 @@ def run_ingestion(
                     "source_system":     "readiness_screen",
                     "source_athlete_id": src_id,
                     "trial_name":        trial_name,
+                    "trial_id":          _trial_id_from_name(trial_name),
                     "age_at_collection": age_at_collection,
                     "age_group":         age_group,
                     "jump_height":       _safe(parsed.get("JH_IN")),
@@ -348,13 +403,16 @@ def run_ingestion(
                     "vel_at_pp":         _safe(parsed.get("Vel_at_PP")),
                     **power_metrics,
                     **phase_metrics,
+                    **force_metrics,
                 }
                 update_cols = [
+                    "source_athlete_id",
                     "jump_height", "peak_power", "peak_force",
                     "pp_w_per_kg", "pp_forceplate", "force_at_pp", "vel_at_pp",
-                    "age_at_collection", "age_group",
+                    "age_at_collection", "age_group", "trial_id",
                     *POWER_CURVE_COLS,
                     *PHASE_COLS,
+                    *FORCE_COLS,
                 ]
                 # Only update columns that exist in insert_data.
                 update_cols = [c for c in update_cols if c in insert_data]

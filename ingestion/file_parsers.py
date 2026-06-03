@@ -288,7 +288,7 @@ def discover_cmj_ppu_trials(output_dir: str) -> List[Dict]:
     if not output_dir or not os.path.isdir(output_dir):
         return results
     for fname in sorted(os.listdir(output_dir)):
-        if not fname.endswith(".txt") or fname.endswith("_Power.txt"):
+        if not fname.endswith(".txt") or fname.endswith("_Power.txt") or fname.endswith("_Force.txt"):
             continue
         upper = fname.upper()
         if upper.startswith("CMJ"):
@@ -297,9 +297,14 @@ def discover_cmj_ppu_trials(output_dir: str) -> List[Dict]:
             mvt = "PPU"
         else:
             continue
+        trial_name = os.path.splitext(fname)[0]
+        # Skip legacy consolidated files (e.g. cmj_data, ppu_data).
+        # Only process numbered trials: CMJ1, CMJ2, PPU1, PPU2, etc.
+        if "_data" in trial_name.lower():
+            continue
         results.append({
             "movement_type": mvt,
-            "trial_name":    os.path.splitext(fname)[0],
+            "trial_name":    trial_name,
             "file_path":     os.path.join(output_dir, fname),
         })
     return results

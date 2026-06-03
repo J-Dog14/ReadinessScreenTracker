@@ -66,6 +66,10 @@ CMJ_METRICS: List[Tuple[str, str, int]] = [
     ("f_readiness_screen_cmj", "ecc_con_duration_ratio", -1),  # rises with fatigue
     # eccentric_mean_power_w is negative; more negative (faster braking) = better → sign -1
     ("f_readiness_screen_cmj", "eccentric_mean_power_w", -1),
+    # v2.1 force-derived metrics
+    ("f_readiness_screen_cmj", "peak_grf_bw_ratio",    +1),  # normalized peak force
+    ("f_readiness_screen_cmj", "rfd_0_100ms",          +1),  # rate of force development
+    ("f_readiness_screen_cmj", "concentric_impulse_ns", +1), # mechanical output
 ]
 PPU_METRICS: List[Tuple[str, str, int]] = [
     ("f_readiness_screen_ppu", "jump_height",          +1),
@@ -75,6 +79,13 @@ PPU_METRICS: List[Tuple[str, str, int]] = [
     # v2 phase metrics — eccentric metrics omitted (still-start protocol, always NULL)
     ("f_readiness_screen_ppu", "mrsi",                 +1),
     ("f_readiness_screen_ppu", "contraction_time_s",   -1),
+    # v2.1 force-derived metrics
+    ("f_readiness_screen_ppu", "peak_grf_bw_ratio",      +1),
+    ("f_readiness_screen_ppu", "rfd_0_100ms",            +1),
+    ("f_readiness_screen_ppu", "concentric_impulse_ns",  +1),
+    # eccentric phase metrics — PPU loads before exploding (plyometric push-up)
+    ("f_readiness_screen_ppu", "ecc_con_duration_ratio", -1),
+    ("f_readiness_screen_ppu", "eccentric_mean_power_w", -1),
 ]
 
 # Athletic screen supplemental sources (read-only).

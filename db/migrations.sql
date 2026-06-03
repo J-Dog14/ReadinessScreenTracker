@@ -190,3 +190,27 @@ ALTER TABLE public.f_readiness_screen_power_curve
 -- Grip group sub-score on score table
 ALTER TABLE public.f_readiness_screen_score
     ADD COLUMN IF NOT EXISTS grip_z NUMERIC;
+
+-- Expand band column: INSUFFICIENT_HISTORY is 20 chars, exceeded VARCHAR(16)
+ALTER TABLE public.f_readiness_screen_score
+    ALTER COLUMN band TYPE VARCHAR(32);
+
+-- trial_id on CMJ and PPU fact tables
+ALTER TABLE public.f_readiness_screen_cmj
+    ADD COLUMN IF NOT EXISTS trial_id INTEGER;
+
+ALTER TABLE public.f_readiness_screen_ppu
+    ADD COLUMN IF NOT EXISTS trial_id INTEGER;
+
+-- v2.1 — force-derived columns on CMJ and PPU fact tables
+ALTER TABLE public.f_readiness_screen_cmj
+    ADD COLUMN IF NOT EXISTS peak_grf_n            DECIMAL,
+    ADD COLUMN IF NOT EXISTS peak_grf_bw_ratio     DECIMAL,
+    ADD COLUMN IF NOT EXISTS rfd_0_100ms           DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_impulse_ns DECIMAL;
+
+ALTER TABLE public.f_readiness_screen_ppu
+    ADD COLUMN IF NOT EXISTS peak_grf_n            DECIMAL,
+    ADD COLUMN IF NOT EXISTS peak_grf_bw_ratio     DECIMAL,
+    ADD COLUMN IF NOT EXISTS rfd_0_100ms           DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_impulse_ns DECIMAL;

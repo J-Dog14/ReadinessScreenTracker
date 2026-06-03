@@ -217,3 +217,34 @@ All three queries should return the expected rows. Once confirmed, the readiness
 - `f_readiness_screen_i` and `f_readiness_screen_t` are **not touched** — historical rows remain queryable.
 - `eccentric_*` columns on the PPU table will always be NULL in practice (still-start protocol) but are kept for schema consistency.
 - Computed columns (`avg_kg`, `max_kg`, `asymmetry_pct`) are populated by the tracker app at insert time, not by a DB trigger.
+
+---
+
+## v2.1 — Force-derived metrics (CMJ + PPU)
+
+Requires `*_Force.txt` files (full-trial vertical GRF, Newtons) in the output folder alongside the existing `*_Power.txt` files. Body weight is estimated from the CMJ quiet-standing phase and applied to PPU.
+
+### SQL
+
+```sql
+ALTER TABLE public.f_readiness_screen_cmj
+    ADD COLUMN IF NOT EXISTS peak_grf_n            DECIMAL,
+    ADD COLUMN IF NOT EXISTS peak_grf_bw_ratio     DECIMAL,
+    ADD COLUMN IF NOT EXISTS rfd_0_100ms           DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_impulse_ns DECIMAL;
+
+ALTER TABLE public.f_readiness_screen_ppu
+    ADD COLUMN IF NOT EXISTS peak_grf_n            DECIMAL,
+    ADD COLUMN IF NOT EXISTS peak_grf_bw_ratio     DECIMAL,
+    ADD COLUMN IF NOT EXISTS rfd_0_100ms           DECIMAL,
+    ADD COLUMN IF NOT EXISTS concentric_impulse_ns DECIMAL;
+```
+
+### Prisma additions (both `f_readiness_screen_cmj` and `f_readiness_screen_ppu`)
+
+```prisma
+  peak_grf_n             Decimal?
+  peak_grf_bw_ratio      Decimal?
+  rfd_0_100ms            Decimal?
+  concentric_impulse_ns  Decimal?
+```
