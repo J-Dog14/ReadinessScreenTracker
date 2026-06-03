@@ -22,6 +22,7 @@
             if (mode === "auto") {
                 selectedAthlete = null;
                 $("#athlete-selected").textContent = "";
+                $("#athlete-history").style.display = "none";
             }
         });
     });
@@ -55,6 +56,7 @@
                         if (a.dominant_hand) {
                             $("#grip-dominant").value = a.dominant_hand;
                         }
+                        loadAthleteHistory(a.athlete_uuid, a.name);
                     });
                     box.appendChild(div);
                 });
@@ -340,5 +342,97 @@
     function escapeHtml(s) {
         if (s == null) return "";
         return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+
+    // ─── Athlete history charts ───────────────────────────────────────────
+    async function loadAthleteHistory(uuid, name) {
+        const panel = $("#athlete-history");
+        const empty = $("#hist-empty");
+        panel.style.display = "";
+        empty.style.display = "none";
+        $("#history-athlete-name").textContent = name;
+        $("#hist-score").innerHTML = `<p style="color:var(--muted);font-size:0.8rem;padding:1rem">Loading…</p>`;
+        ["hist-cmj", "hist-ppu", "hist-iso"].forEach(id => { const el = $(`#${id}`); if (el) el.innerHTML = ""; });
+
+        try {
+            const res = await fetch(`/api/dashboard/athlete/${uuid}`);
+            const d = await res.json();
+
+            const hasHistory = d.score_history?.length || d.cmj?.timeseries?.length || d.ppu?.timeseries?.length;
+            if (!hasHistory) {
+                empty.style.display = "";
+                $("#hist-score").innerHTML = "";
+                return;
+            }
+
+            if (d.score_history?.length) {
+                const dates  = d.score_history.map(r => r.date);
+                const scores = d.score_history.map(r => r.composite_score ?? null);
+                const ends   = [dates[0], dates[dates.length - 1]];
+                Plotly.newPlot("hist-score", [
+                    { x: dates, y: scores, type: "scatter", mode: "lines+markers",
+                      line: { color: "#2c99d4", width: 2 }, marker: { size: 7 }, name: "Score" },
+                    { x: ends, y: [60, 60], mode: "lines", hoverinfo: "skip",
+                      line: { color: "#27ae60", width: 1, dash: "dash" }, showlegend: false },
+                    { x: ends, y: [40, 40], mode: "lines", hoverinfo: "skip",
+                      line: { color: "#e67e22", width: 1, dash: "dash" }, showlegend: false },
+                ], miniLayout("Composite Score", "Score", [0, 100]), { responsive: true, displayModeBar: false });
+            }
+
+            if (d.cmj?.timeseries?.length) {
+                const ts = d.cmj.timeseries;
+                Plotly.newPlot("hist-cmj", [
+                    { x: ts.map(r => r.date), y: ts.map(r => r.jump_height ?? null),
+                      type: "scatter", mode: "lines+markers",
+                      line: { color: "#9b59b6", width: 2 }, marker: { size: 7 }, name: "JH (in)" },
+                ], miniLayout("CMJ Jump Height", "inches"), { responsive: true, displayModeBar: false });
+            }
+
+            if (d.ppu?.timeseries?.length) {
+                const ts = d.ppu.timeseries;
+                Plotly.newPlot("hist-ppu", [
+                    { x: ts.map(r => r.date), y: ts.map(r => r.jump_height ?? null),
+                      type: "scatter", mode: "lines+markers",
+                      line: { color: "#e67e22", width: 2 }, marker: { size: 7 }, name: "JH (in)" },
+                ], miniLayout("PPU Jump Height", "inches"), { responsive: true, displayModeBar: false });
+            }
+
+            const isoTraces = [];
+            const palette = { Y: "#27ae60", IR90: "#2c99d4" };
+            ["Y", "IR90"].forEach(mv => {
+                const grp = d.iso?.[mv];
+                if (grp?.data?.length) {
+                    isoTraces.push({
+                        x: grp.data.map(r => r.date), y: grp.data.map(r => r.avg_force ?? null),
+                        type: "scatter", mode: "lines+markers",
+                        line: { color: palette[mv], width: 2 }, marker: { size: 7 }, name: mv,
+                    });
+                }
+            });
+            if (isoTraces.length) {
+                Plotly.newPlot("hist-iso", isoTraces,
+                    miniLayout("ISO (Y / IR90)", "Avg Force (N)"),
+                    { responsive: true, displayModeBar: false });
+            }
+
+        } catch (_) {
+            $("#hist-score").innerHTML = `<p style="color:var(--danger);font-size:0.8rem;padding:1rem">Failed to load history.</p>`;
+        }
+    }
+
+    function miniLayout(title, yTitle, yRange) {
+        return {
+            title: { text: title, font: { size: 12 }, x: 0.03 },
+            margin: { l: 44, r: 12, t: 28, b: 36 },
+            xaxis: { type: "category", tickfont: { size: 10 } },
+            yaxis: {
+                title: yTitle, titlefont: { size: 10 }, tickfont: { size: 10 },
+                ...(yRange ? { range: yRange } : {}),
+            },
+            paper_bgcolor: "transparent",
+            plot_bgcolor:  "transparent",
+            showlegend: true,
+            legend: { font: { size: 10 }, orientation: "h", y: -0.25 },
+        };
     }
 })();
