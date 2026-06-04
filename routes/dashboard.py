@@ -212,17 +212,37 @@ def _cmj_or_ppu(cur, uuid: str, kind: str):
 
 
 def _score_history(cur, uuid: str) -> List[Dict]:
-    cur.execute(
-        """
-        SELECT session_date, composite_score, composite_z, band,
-               cmj_z, ppu_z, iso_z, power_curve_z, grip_z,
-               metrics_used, flags_json, scoring_tier
-          FROM public.f_readiness_screen_score
-         WHERE athlete_uuid = %s
-         ORDER BY session_date
-        """,
-        (uuid,),
-    )
+    # Use a savepoint so the shared transaction survives if scoring_tier hasn't been
+    # migrated to the DB yet. Automatically uses the column once the migration is applied.
+    try:
+        cur.execute("SAVEPOINT _score_history_sp")
+        cur.execute(
+            """
+            SELECT session_date, composite_score, composite_z, band,
+                   cmj_z, ppu_z, iso_z, power_curve_z, grip_z,
+                   metrics_used, flags_json, scoring_tier
+              FROM public.f_readiness_screen_score
+             WHERE athlete_uuid = %s
+             ORDER BY session_date
+            """,
+            (uuid,),
+        )
+        has_tier = True
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT _score_history_sp")
+        cur.execute(
+            """
+            SELECT session_date, composite_score, composite_z, band,
+                   cmj_z, ppu_z, iso_z, power_curve_z, grip_z,
+                   metrics_used, flags_json
+              FROM public.f_readiness_screen_score
+             WHERE athlete_uuid = %s
+             ORDER BY session_date
+            """,
+            (uuid,),
+        )
+        has_tier = False
+
     return [
         {
             "date":            r["session_date"].isoformat() if r["session_date"] else None,
@@ -236,7 +256,7 @@ def _score_history(cur, uuid: str) -> List[Dict]:
             "grip_z":          float(r["grip_z"]) if r["grip_z"] is not None else None,
             "metrics_used":    r["metrics_used"],
             "flags":           r["flags_json"],
-            "scoring_tier":    r["scoring_tier"],
+            "scoring_tier":    r["scoring_tier"] if has_tier else None,
         }
         for r in cur.fetchall()
     ]
