@@ -254,7 +254,7 @@ def _fetch_today_and_baseline(
             (athlete_uuid, session_date, cutoff),
         )
 
-    baseline = [r[0] for r in cur.fetchall() if r and r[0] is not None]
+    baseline = [r[-1] for r in cur.fetchall() if r and r[-1] is not None]
     return today, baseline
 
 
