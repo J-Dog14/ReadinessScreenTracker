@@ -69,6 +69,7 @@ def normalize_name_for_matching(name: str) -> str:
         return ""
     name = name.replace("_", " ")
     name = _strip_dates(name)
+    name = re.sub(r"\s+[A-Z]{1,3}\s*$", "", name.strip())  # strip trailing initials before last/first swap
     name = _last_first_to_first_last(name)
     return " ".join(name.split()).upper()
 

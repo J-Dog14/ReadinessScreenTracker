@@ -93,7 +93,8 @@ cases = [
     ("Weiss, Ryan 11-25", "RYAN WEISS",   "Ryan Weiss"),
     ("Crider. Carson",    "CARSON CRIDER", "Carson Crider"),
     ("Ryan Weiss",        "RYAN WEISS",   "Ryan Weiss"),
-    ("RYAN WEISS_CH",     "RYAN WEISS CH", "RYAN WEISS_CH"),
+    ("RYAN WEISS_CH",     "RYAN WEISS",    "RYAN WEISS_CH"),
+    ("Mclamb, John_JM",  "JOHN MCLAMB",  "John_JM Mclamb"),
 ]
 for raw, exp_norm, exp_disp in cases:
     nm = normalize_name_for_matching(raw)
