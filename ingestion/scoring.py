@@ -50,6 +50,7 @@ log = logging.getLogger(__name__)
 DEFAULT_BASELINE_DAYS = 28
 MIN_HISTORY = 2                 # need at least this many prior points to z-score (Tier 3)
 SCORE_SD_TO_POINTS = 15.0       # ±1 SD ≈ ±15 points
+Z_CLAMP = 3.0                   # cap individual metric z-scores to ±3 SD
 BAND_READY = 60
 BAND_FATIGUED = 40
 
@@ -471,6 +472,7 @@ def _score_first_run(
                 continue
             cohort_mean, cohort_sd, n = cohort
             z_signed = sign * (today - cohort_mean) / cohort_sd
+            z_signed = max(-Z_CLAMP, min(Z_CLAMP, z_signed))
             per_metric[label] = {
                 "today":        round(today, 4),
                 "mean":         round(cohort_mean, 4),
@@ -543,6 +545,7 @@ def _score_a_to_b(
                 continue
             _, cohort_sd, _ = cohort
             z_signed = sign * (today - prior_value) / cohort_sd
+            z_signed = max(-Z_CLAMP, min(Z_CLAMP, z_signed))
             per_metric[label] = {
                 "today":         round(today, 4),
                 "mean":          round(prior_value, 4),
@@ -614,6 +617,7 @@ def _score_readiness(
                 continue
             z, mean, sd = z_result
             z_signed = sign * z
+            z_signed = max(-Z_CLAMP, min(Z_CLAMP, z_signed))
             per_metric[label] = {
                 "today":     round(today, 4),
                 "mean":      round(mean, 4),
