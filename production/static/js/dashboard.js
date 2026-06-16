@@ -241,8 +241,6 @@
             `z: ${m.z != null ? m.z.toFixed(3) : "—"}<br>` +
             `n history: ${m.n_history}`
         );
-        const chartHeight = Math.max(300, labels.length * 22 + 60);
-        el.style.height = chartHeight + "px";
         Plotly.react(el, [{
             type: "bar", orientation: "h",
             x: zs, y: labels,
@@ -254,7 +252,7 @@
             xaxis: { ...layoutBase.xaxis, title: "z-score", zeroline: true, zerolinecolor: "#888", zerolinewidth: 1 },
             yaxis: { ...layoutBase.yaxis, automargin: true },
             margin: { l: 160, r: 24, t: 12, b: 40 },
-            height: chartHeight,
+            height: Math.max(300, labels.length * 22 + 60),
         }, config);
     }
 
