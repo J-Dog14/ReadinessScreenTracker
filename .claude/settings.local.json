@@ -12,7 +12,12 @@
       "Bash(python tests/smoke_test.py)",
       "Bash(ls \"C:\\\\Users\\\\Joey\\\\.claude\\\\projects\\\\c--Users-Joey-PycharmProjects-Readiness-Screen-Tracker\\\\memory\\\\\")",
       "Read(//c/Users/Joey/.claude/projects/c--Users-Joey-PycharmProjects-Readiness-Screen-Tracker/**)",
-      "Bash(python init_db.py)"
+      "Bash(python init_db.py)",
+      "Bash(python tests/test_e2e.py)",
+      "Bash(python -m pytest tests/test_e2e.py -k \"TestHitterMode\" -v)",
+      "Bash(python -m unittest tests.test_e2e.TestHitterMode -v)",
+      "Bash(git stash *)",
+      "Bash(python -m unittest tests.test_e2e)"
     ]
   }
 }

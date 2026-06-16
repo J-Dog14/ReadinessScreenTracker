@@ -402,4 +402,94 @@ _m2 = inches_to_meters(0)
 if _m2 is not None: fail("inches_to_meters(0) should return None, got %r" % _m2)
 ok("inches_to_meters correct")
 
+# 16) Hitter score group constants
+print("[16] Hitter score group constants")
+if "iso" in scoring._HITTER_SCORE_GROUPS:
+    fail("'iso' must NOT be in _HITTER_SCORE_GROUPS")
+if "cmj" not in scoring._HITTER_SCORE_GROUPS:
+    fail("'cmj' must be in _HITTER_SCORE_GROUPS")
+if "ppu" not in scoring._HITTER_SCORE_GROUPS:
+    fail("'ppu' must be in _HITTER_SCORE_GROUPS")
+if "iso" not in scoring._SCORE_GROUPS:
+    fail("'iso' must be in _SCORE_GROUPS (pitcher mode regression)")
+ok("_HITTER_SCORE_GROUPS excludes iso; _SCORE_GROUPS includes iso")
+
+# 17) Hitter scoring: iso_z=None (not 0), composite computed from remaining groups
+print("[17] Hitter scoring — iso_z=None, composite from CMJ/PPU/Power/Grip")
+from datetime import date as _date17
+import json as _json17
+
+_UUID17 = "pitcher-uuid-hitter-session"
+_TODAY17 = _date17.today()
+
+def _mock_fetch17(cur, uuid, table, col, session_date, baseline_days):
+    # Provide valid today + 2-point baseline for every non-ISO metric.
+    # ISO metrics are never queried in hitter mode so this branch never fires for them.
+    return (16.0, [15.0, 15.5])
+
+with patch("ingestion.scoring._fetch_today_and_baseline", side_effect=_mock_fetch17):
+    _r17 = scoring._score_readiness(
+        MagicMock(), _UUID17, _TODAY17, 28,
+        score_groups=scoring._HITTER_SCORE_GROUPS,
+    )
+
+if _r17["iso_z"] is not None:
+    fail("[17] iso_z should be None in hitter mode, got %r" % _r17["iso_z"])
+if _r17["cmj_z"] is None:
+    fail("[17] cmj_z should not be None in hitter mode")
+if _r17["composite_score"] is None:
+    fail("[17] composite_score should not be None in hitter mode")
+
+# Verify ISO metrics were not present in per_metric at all (never queried).
+_pm17 = _json17.loads(_r17["flags_json"]).get("per_metric", {})
+_iso_keys17 = [k for k in _pm17 if k.startswith("y.") or k.startswith("ir90.")]
+if _iso_keys17:
+    fail("[17] ISO keys should be absent from per_metric in hitter mode, found: %r" % _iso_keys17)
+
+ok("hitter: iso_z=None, cmj_z=%.3f, composite=%.1f, no ISO keys in flags" % (
+    _r17["cmj_z"], _r17["composite_score"]))
+
+# 18) Pitcher re-score after a hitter gap — ISO insufficient_history, composite still computed
+# Scenario: pitcher has prior ISO data but one intervening session was run as hitter (no ISO rows
+# inserted). The ISO baseline therefore has only 1 prior point (< MIN_HISTORY=2). We expect:
+#   - ISO metrics flagged "insufficient_history" (not a penalty / not averaged in as 0)
+#   - iso_z = None (not 0)
+#   - composite_score still computed from CMJ/PPU/Power/Grip
+print("[18] Pitcher re-score after hitter gap — ISO insufficient_history, composite still computed")
+import json as _json18
+from datetime import date as _date18
+
+_UUID18 = "pitcher-uuid-returning"
+_TODAY18 = _date18.today()
+
+def _mock_fetch18(cur, uuid, table, col, session_date, baseline_days):
+    if "f_readiness_screen_y" in table or "f_readiness_screen_ir90" in table:
+        # Only 1 prior ISO point because the hitter gap session has no ISO rows.
+        return (800.0, [850.0])   # len=1 < MIN_HISTORY=2 → insufficient_history
+    # CMJ/PPU: 2 valid baseline points.
+    return (16.0, [15.0, 15.5])
+
+with patch("ingestion.scoring._fetch_today_and_baseline", side_effect=_mock_fetch18):
+    _r18 = scoring._score_readiness(
+        MagicMock(), _UUID18, _TODAY18, 28,
+        score_groups=scoring._SCORE_GROUPS,   # full pitcher groups
+    )
+
+if _r18["composite_score"] is None:
+    fail("[18] composite_score should not be None — CMJ/PPU should still score after hitter gap")
+if _r18["iso_z"] is not None:
+    fail("[18] iso_z should be None when ISO has insufficient history, got %r" % _r18["iso_z"])
+
+_flags18 = _json18.loads(_r18["flags_json"]).get("per_metric", {})
+_iso_keys18 = [k for k in _flags18 if k.startswith("y.") or k.startswith("ir90.")]
+if not _iso_keys18:
+    fail("[18] Expected ISO metrics in per_metric (they were queried with today value present)")
+for _k in _iso_keys18:
+    _flag_val = _flags18[_k].get("flag")
+    if _flag_val != "insufficient_history":
+        fail("[18] ISO metric %r should have 'insufficient_history', got %r" % (_k, _flag_val))
+
+ok("pitcher after hitter gap: composite=%.1f, iso_z=None, ISO flags=insufficient_history (no penalty)" % (
+    _r18["composite_score"]))
+
 print("\nALL SMOKE TESTS PASSED.")

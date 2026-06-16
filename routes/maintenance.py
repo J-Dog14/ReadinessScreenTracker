@@ -19,9 +19,10 @@ from typing import Dict
 from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 
 from config import get_output_dir, get_power_dir, get_power_sample_rate_hz
+from db.connection import get_connection
 from ingestion.athlete_manager import search_athletes
 from ingestion.file_parsers import ASCII_FILES, discover_cmj_ppu_trials, discover_txt_files, extract_name
-from ingestion.pipeline import run_ingestion
+from ingestion.pipeline import _calc_age, _upsert, run_ingestion
 
 bp = Blueprint("maintenance", __name__)
 
@@ -98,6 +99,7 @@ def run():
     power_dir = (body.get("power_dir") or output_dir).strip()
     fs_hz = float(body.get("fs_hz") or 1000)
     athlete_uuid = body.get("athlete_uuid") or None
+    is_hitter = bool(body.get("is_hitter", False))
     if not output_dir:
         return jsonify({"error": "output_dir required"}), 400
 
@@ -134,6 +136,7 @@ def run():
                 athlete_uuid_override=athlete_uuid,
                 cancel_event=job.cancelled,
                 grip_payload=grip_payload,
+                is_hitter=is_hitter,
             )
             job.summary = summary
         except Exception as e:
@@ -210,3 +213,121 @@ def athlete_search():
         return jsonify({"results": search_athletes(q)})
     except Exception:
         return jsonify({"results": []})
+
+
+@bp.route("/api/athletes/lookup")
+def athlete_lookup():
+    """Resolve a raw file-extracted name to an athlete + their most recent dominant hand.
+
+    Uses the same normalize→exact→fuzzy resolution as the ingestion pipeline so
+    auto-detect mode reliably identifies the same athlete the pipeline would pick.
+    """
+    from ingestion.athlete_manager import find_existing_athlete, normalize_name_for_matching
+    name = request.args.get("name", "").strip()
+    if len(name) < 2:
+        return jsonify({"athlete": None})
+    normalized = normalize_name_for_matching(name)
+    conn = get_connection()
+    try:
+        existing = find_existing_athlete(conn, normalized)
+        if not existing:
+            return jsonify({"athlete": None})
+        athlete_uuid = str(existing["athlete_uuid"])
+        dominant_hand = None
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT dominant_hand
+                    FROM   analytics.f_readiness_screen_grip
+                    WHERE  athlete_uuid = %s
+                      AND  dominant_hand IS NOT NULL
+                    ORDER  BY session_date DESC
+                    LIMIT  1
+                    """,
+                    (athlete_uuid,),
+                )
+                row = cur.fetchone()
+                dominant_hand = row[0] if row else None
+            except Exception:
+                conn.rollback()
+        return jsonify({"athlete": {
+            "athlete_uuid": athlete_uuid,
+            "name":         existing.get("name"),
+            "age_group":    existing.get("age_group"),
+            "dominant_hand": dominant_hand,
+        }})
+    finally:
+        conn.close()
+
+
+@bp.route("/api/grip-log", methods=["POST"])
+def grip_log():
+    """Insert a standalone grip strength row for an athlete. No scoring triggered."""
+    from datetime import date as _date
+    body = request.get_json(silent=True) or {}
+    athlete_uuid = (body.get("athlete_uuid") or "").strip()
+    session_date_str = (body.get("session_date") or "").strip()
+    left_raw  = body.get("left_kg")
+    right_raw = body.get("right_kg")
+
+    if not athlete_uuid:
+        return jsonify({"error": "athlete_uuid required"}), 400
+    if left_raw is None and right_raw is None:
+        return jsonify({"error": "at least one grip value required"}), 400
+
+    try:
+        session_date = _date.fromisoformat(session_date_str) if session_date_str else _date.today()
+    except ValueError:
+        return jsonify({"error": "invalid session_date"}), 400
+
+    lkg = float(left_raw)  if left_raw  is not None else None
+    rkg = float(right_raw) if right_raw is not None else None
+    both = lkg is not None and rkg is not None
+    avg_kg = (lkg + rkg) / 2.0 if both else None
+    max_kg = max(v for v in (lkg, rkg) if v is not None) if (lkg or rkg) else None
+    asym   = (100.0 * abs(lkg - rkg) / max_kg) if both and max_kg else None
+
+    age_at_collection, age_group, date_str = _calc_age(athlete_uuid, session_date.isoformat())
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name FROM analytics.d_athletes WHERE athlete_uuid = %s",
+                (athlete_uuid,),
+            )
+            row = cur.fetchone()
+            athlete_name = row[0] if row else athlete_uuid
+
+        grip_data = {
+            "athlete_uuid":      athlete_uuid,
+            "session_date":      date_str,
+            "source_system":     "readiness_screen",
+            "source_athlete_id": athlete_name,
+            "age_at_collection": age_at_collection,
+            "age_group":         age_group,
+            "left_kg":           lkg,
+            "right_kg":          rkg,
+            "avg_kg":            avg_kg,
+            "max_kg":            max_kg,
+            "asymmetry_pct":     asym,
+            "dominant_hand":     body.get("dominant_hand") or None,
+            "entry_source":      "manual",
+            "notes":             body.get("notes") or None,
+        }
+        update_cols = [
+            "left_kg", "right_kg", "avg_kg", "max_kg", "asymmetry_pct",
+            "dominant_hand", "entry_source", "notes", "age_at_collection", "age_group",
+        ]
+        verb = _upsert(
+            conn, "f_readiness_screen_grip", grip_data, update_cols,
+            "athlete_uuid = %s AND session_date = %s",
+            (athlete_uuid, date_str),
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True, "verb": verb, "date": date_str, "athlete_name": athlete_name})

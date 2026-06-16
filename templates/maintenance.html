@@ -22,6 +22,17 @@
     <div class="chip"           data-mode="existing">Existing athlete</div>
   </div>
 
+  <div style="margin-bottom: 0.85rem;">
+    <label class="field-label" style="margin-bottom: 0.35rem;">Test type</label>
+    <div class="chip-group" id="type-chips">
+      <div class="chip is-active" data-type="pitcher">Pitcher</div>
+      <div class="chip"           data-type="hitter">Hitter</div>
+    </div>
+    <div id="hitter-note" class="text-muted" style="font-size: 0.83rem; margin-top: 0.35rem; display: none;">
+      Hitter mode — Y and IR90 will be skipped; score computed from CMJ, PPU, Power, and Grip only.
+    </div>
+  </div>
+
   <div id="auto-msg" class="text-muted" style="font-size: 0.88rem;">
     The athlete and session date will be extracted from the first line of
     each movement file (matches the backend reader).
@@ -187,6 +198,60 @@
   <div class="terminal" id="terminal" style="margin-top: 0.75rem; display:none;"></div>
 
   <div id="result-summary" style="margin-top: 0.75rem; display:none;"></div>
+</section>
+<!-- ─── Grip log ──────────────────────────────────────────────────────────── -->
+<section class="card">
+  <h2>Grip Log <span class="text-muted" style="font-size: 0.8rem; font-weight: 400;">— Quick entry (no score recomputed)</span></h2>
+  <p class="text-muted" style="font-size: 0.88rem; margin-top: 0; margin-bottom: 0.85rem;">
+    Record a standalone grip measurement for any athlete. Inserts directly into the grip table; does not trigger a full ingestion or score update.
+  </p>
+
+  <div class="row" style="gap: 1rem; flex-wrap: wrap; align-items: flex-start; margin-bottom: 0.75rem;">
+    <div style="flex: 1; min-width: 220px;">
+      <label class="field-label">Athlete</label>
+      <div class="search-dropdown">
+        <input id="gl-athlete-search" class="input" type="text" placeholder="Type a name…" autocomplete="off">
+        <div id="gl-athlete-results" class="results" style="display:none;"></div>
+      </div>
+      <div id="gl-athlete-selected" class="text-muted" style="margin-top: 0.4rem; font-size: 0.85rem;"></div>
+    </div>
+    <div>
+      <label class="field-label">Date</label>
+      <input id="gl-date" class="input mono" type="date" style="width: 160px;">
+    </div>
+  </div>
+
+  <div class="row" style="align-items: flex-end; gap: 0.75rem; flex-wrap: wrap;">
+    <div>
+      <label class="field-label">Left hand</label>
+      <input id="gl-left" class="input mono" type="number" step="0.1" min="0" placeholder="—" style="width: 90px;">
+    </div>
+    <div>
+      <label class="field-label">Right hand</label>
+      <input id="gl-right" class="input mono" type="number" step="0.1" min="0" placeholder="—" style="width: 90px;">
+    </div>
+    <div>
+      <label class="field-label">Unit</label>
+      <div class="text-muted" style="line-height: 2; font-size: 0.88rem;">lbs</div>
+    </div>
+    <div>
+      <label class="field-label">Dominant hand</label>
+      <select id="gl-dominant" class="input" style="width: 130px;">
+        <option value="">Not specified</option>
+        <option value="R">Right</option>
+        <option value="L">Left</option>
+      </select>
+    </div>
+    <div style="flex: 1; min-width: 180px;">
+      <label class="field-label">Notes</label>
+      <input id="gl-notes" class="input" type="text" placeholder="Optional…" style="width: 100%;">
+    </div>
+    <div style="align-self: flex-end;">
+      <button id="gl-save-btn" class="btn btn-primary">Save Grip</button>
+    </div>
+  </div>
+
+  <div id="gl-status" style="margin-top: 0.65rem; font-size: 0.88rem; display: none;"></div>
 </section>
 {% endblock %}
 

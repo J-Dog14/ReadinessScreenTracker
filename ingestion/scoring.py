@@ -423,6 +423,14 @@ _SCORE_GROUPS = {
     "grip":        GRIP_METRICS,
 }
 
+# Hitter variant — omits ISO (Y / IR90 not collected for position players).
+_HITTER_SCORE_GROUPS = {
+    "cmj":         CMJ_METRICS,
+    "ppu":         PPU_METRICS,
+    "power_curve": POWER_CURVE_METRICS,
+    "grip":        GRIP_METRICS,
+}
+
 
 def _build_null_result(per_metric: Dict, baseline_days: int, scoring_tier: str, note: str) -> Dict:
     return {
@@ -446,13 +454,16 @@ def _score_first_run(
     athlete_uuid: str,
     session_date: date,
     baseline_days: int,
+    score_groups: Dict = None,
 ) -> Dict:
     """Tier 1 (0 prior sessions): z-score vs cohort population mean/SD."""
+    if score_groups is None:
+        score_groups = _SCORE_GROUPS
     per_metric: Dict[str, dict] = {}
-    group_zs: Dict[str, List[float]] = {k: [] for k in _SCORE_GROUPS}
+    group_zs: Dict[str, List[float]] = {k: [] for k in score_groups}
     all_zs: List[float] = []
 
-    for group_name, metric_list in _SCORE_GROUPS.items():
+    for group_name, metric_list in score_groups.items():
         for table, col, sign in metric_list:
             today, _ = _fetch_today_and_baseline(
                 cur, athlete_uuid, table, col, session_date, baseline_days
@@ -500,11 +511,11 @@ def _score_first_run(
         "composite_score":    round(score, 1),
         "composite_z":        round(composite_z, 3),
         "band":               band,
-        "cmj_z":              _g_avg(group_zs["cmj"]),
-        "ppu_z":              _g_avg(group_zs["ppu"]),
-        "iso_z":              _g_avg(group_zs["iso"]),
-        "power_curve_z":      _g_avg(group_zs["power_curve"]),
-        "grip_z":             _g_avg(group_zs["grip"]),
+        "cmj_z":              _g_avg(group_zs.get("cmj", [])),
+        "ppu_z":              _g_avg(group_zs.get("ppu", [])),
+        "iso_z":              _g_avg(group_zs.get("iso", [])),
+        "power_curve_z":      _g_avg(group_zs.get("power_curve", [])),
+        "grip_z":             _g_avg(group_zs.get("grip", [])),
         "metrics_used":       len(all_zs),
         "baseline_window_days": baseline_days,
         "scoring_tier":       "FIRST_RUN",
@@ -517,13 +528,16 @@ def _score_a_to_b(
     athlete_uuid: str,
     session_date: date,
     baseline_days: int,
+    score_groups: Dict = None,
 ) -> Dict:
     """Tier 2 (1 prior session): delta z-score (today − prior) scaled by cohort SD."""
+    if score_groups is None:
+        score_groups = _SCORE_GROUPS
     per_metric: Dict[str, dict] = {}
-    group_zs: Dict[str, List[float]] = {k: [] for k in _SCORE_GROUPS}
+    group_zs: Dict[str, List[float]] = {k: [] for k in score_groups}
     all_zs: List[float] = []
 
-    for group_name, metric_list in _SCORE_GROUPS.items():
+    for group_name, metric_list in score_groups.items():
         for table, col, sign in metric_list:
             today, baseline = _fetch_today_and_baseline(
                 cur, athlete_uuid, table, col, session_date, baseline_days
@@ -573,11 +587,11 @@ def _score_a_to_b(
         "composite_score":    round(score, 1),
         "composite_z":        round(composite_z, 3),
         "band":               band,
-        "cmj_z":              _g_avg(group_zs["cmj"]),
-        "ppu_z":              _g_avg(group_zs["ppu"]),
-        "iso_z":              _g_avg(group_zs["iso"]),
-        "power_curve_z":      _g_avg(group_zs["power_curve"]),
-        "grip_z":             _g_avg(group_zs["grip"]),
+        "cmj_z":              _g_avg(group_zs.get("cmj", [])),
+        "ppu_z":              _g_avg(group_zs.get("ppu", [])),
+        "iso_z":              _g_avg(group_zs.get("iso", [])),
+        "power_curve_z":      _g_avg(group_zs.get("power_curve", [])),
+        "grip_z":             _g_avg(group_zs.get("grip", [])),
         "metrics_used":       len(all_zs),
         "baseline_window_days": baseline_days,
         "scoring_tier":       "A_TO_B",
@@ -590,13 +604,16 @@ def _score_readiness(
     athlete_uuid: str,
     session_date: date,
     baseline_days: int,
+    score_groups: Dict = None,
 ) -> Dict:
     """Tier 3 (≥2 prior sessions): personal z-score against rolling baseline."""
+    if score_groups is None:
+        score_groups = _SCORE_GROUPS
     per_metric: Dict[str, dict] = {}
-    group_zs: Dict[str, List[float]] = {k: [] for k in _SCORE_GROUPS}
+    group_zs: Dict[str, List[float]] = {k: [] for k in score_groups}
     all_zs: List[float] = []
 
-    for group_name, metric_list in _SCORE_GROUPS.items():
+    for group_name, metric_list in score_groups.items():
         for table, col, sign in metric_list:
             today, baseline = _fetch_today_and_baseline(
                 cur, athlete_uuid, table, col, session_date, baseline_days
@@ -644,11 +661,11 @@ def _score_readiness(
         "composite_score":    round(score, 1),
         "composite_z":        round(composite_z, 3),
         "band":               band,
-        "cmj_z":              _g_avg(group_zs["cmj"]),
-        "ppu_z":              _g_avg(group_zs["ppu"]),
-        "iso_z":              _g_avg(group_zs["iso"]),
-        "power_curve_z":      _g_avg(group_zs["power_curve"]),
-        "grip_z":             _g_avg(group_zs["grip"]),
+        "cmj_z":              _g_avg(group_zs.get("cmj", [])),
+        "ppu_z":              _g_avg(group_zs.get("ppu", [])),
+        "iso_z":              _g_avg(group_zs.get("iso", [])),
+        "power_curve_z":      _g_avg(group_zs.get("power_curve", [])),
+        "grip_z":             _g_avg(group_zs.get("grip", [])),
         "metrics_used":       len(all_zs),
         "baseline_window_days": baseline_days,
         "scoring_tier":       "READINESS",
@@ -747,6 +764,7 @@ def compute_score_for_session(
     athlete_uuid: str,
     session_date: date,
     baseline_days: int = DEFAULT_BASELINE_DAYS,
+    is_hitter: bool = False,
 ) -> Dict:
     """
     Compute the composite readiness score for one (athlete, session_date) and
@@ -757,18 +775,21 @@ def compute_score_for_session(
       Tier 2 (1 prior): A-to-B delta z-score scaled by cohort SD.
       Tier 3 (2+ prior): Personal rolling z-score (current methodology).
 
+    When is_hitter=True, ISO metrics (Y/IR90) are excluded from scoring.
+
     Caller is responsible for upserting into f_readiness_screen_score.
     """
+    score_groups = _HITTER_SCORE_GROUPS if is_hitter else _SCORE_GROUPS
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             n_prior = _count_prior_sessions(cur, athlete_uuid, session_date, baseline_days)
             if n_prior == 0:
-                result = _score_first_run(cur, athlete_uuid, session_date, baseline_days)
+                result = _score_first_run(cur, athlete_uuid, session_date, baseline_days, score_groups)
             elif n_prior == 1:
-                result = _score_a_to_b(cur, athlete_uuid, session_date, baseline_days)
+                result = _score_a_to_b(cur, athlete_uuid, session_date, baseline_days, score_groups)
             else:
-                result = _score_readiness(cur, athlete_uuid, session_date, baseline_days)
+                result = _score_readiness(cur, athlete_uuid, session_date, baseline_days, score_groups)
     finally:
         conn.close()
 
@@ -827,8 +848,8 @@ def upsert_score(athlete_uuid: str, session_date: date, score_dict: Dict) -> Non
         conn.close()
 
 
-def score_session(athlete_uuid: str, session_date: date) -> Dict:
+def score_session(athlete_uuid: str, session_date: date, is_hitter: bool = False) -> Dict:
     """Compute + persist in one call. Returns the score dict (suitable for the dashboard)."""
-    result = compute_score_for_session(athlete_uuid, session_date)
+    result = compute_score_for_session(athlete_uuid, session_date, is_hitter=is_hitter)
     upsert_score(athlete_uuid, session_date, result)
     return result

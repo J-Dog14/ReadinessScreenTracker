@@ -1118,5 +1118,106 @@ class TestSourceAthleteIdWithOverride(unittest.TestCase):
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class TestHitterMode(unittest.TestCase):
+    """Verify that is_hitter=True skips ISO ingestion and passes the flag through to score_session.
+
+    Covers the "injured pitcher" edge case: a pitcher who normally has ISO data
+    is run as hitter for one session. The test confirms:
+      - No ISO rows are inserted (loop skipped).
+      - score_session receives is_hitter=True so iso_z is excluded from the composite.
+      - Reverting to pitcher mode (is_hitter=False) inserts ISO as before (regression guard).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name: str, content: str) -> str:
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def _all_four_files(self):
+        """Write Y, IR90, CMJ1, PPU1, and matching Power files dated today."""
+        self._write("y_data.txt",     iso_txt("Smith_John", TODAY, "y_data.txt"))
+        self._write("ir90_data.txt",  iso_txt("Smith_John", TODAY, "ir90_data.txt"))
+        self._write("CMJ1.txt",       cmj_txt("Smith_John", TODAY, "CMJ1"))
+        self._write("PPU1.txt",       ppu_txt("Smith_John", TODAY, "PPU1"))
+        self._write("CMJ1_Power.txt", power_txt("Smith_John", TODAY, "CMJ1"))
+        self._write("PPU1_Power.txt", power_txt("Smith_John", TODAY, "PPU1"))
+
+    @staticmethod
+    def _score_dict(is_hitter: bool = False) -> dict:
+        return {
+            "composite_score": 65.0, "band": "READY", "composite_z": 1.0,
+            "cmj_z": 1.0, "ppu_z": 0.8,
+            "iso_z": None if is_hitter else 1.1,
+            "power_curve_z": 0.9, "grip_z": None,
+            "metrics_used": 6, "baseline_window_days": 28,
+            "flags_json": "{}", "scoring_tier": "READINESS",
+        }
+
+    def test_hitter_skips_iso_inserts_when_files_present(self):
+        """is_hitter=True must skip Y/IR90 inserts even when those files exist."""
+        self._all_four_files()
+        conn, cur, inserted = make_db_mock()
+        with ExitStack() as s:
+            apply_pipeline_patches(s, conn)
+            _pl.run_ingestion(self.tmp, is_hitter=True, log=lambda m: None)
+
+        self.assertNotIn("public.f_readiness_screen_y",    inserted,
+                         "Y must NOT be inserted in hitter mode")
+        self.assertNotIn("public.f_readiness_screen_ir90", inserted,
+                         "IR90 must NOT be inserted in hitter mode")
+        self.assertIn("public.f_readiness_screen_cmj", inserted,
+                      "CMJ must still be inserted in hitter mode")
+        self.assertIn("public.f_readiness_screen_ppu", inserted,
+                      "PPU must still be inserted in hitter mode")
+
+    def test_hitter_passes_flag_to_score_session(self):
+        """Pipeline must call score_session with is_hitter=True in hitter mode."""
+        self._write("CMJ1.txt", cmj_txt("Smith_John", TODAY, "CMJ1"))
+        conn, cur, _ = make_db_mock()
+        score_mock = MagicMock(return_value=self._score_dict(is_hitter=True))
+
+        with ExitStack() as s:
+            apply_pipeline_patches(s, conn)
+            # Entered after apply_pipeline_patches so it overrides the score_session mock.
+            s.enter_context(patch("ingestion.pipeline.score_session", score_mock))
+            _pl.run_ingestion(self.tmp, is_hitter=True, log=lambda m: None)
+
+        score_mock.assert_called()
+        self.assertTrue(
+            score_mock.call_args.kwargs.get("is_hitter"),
+            "score_session must be called with is_hitter=True in hitter mode",
+        )
+
+    def test_pitcher_mode_unchanged_regression(self):
+        """Default pitcher mode (is_hitter=False) must insert ISO and call score_session with is_hitter=False."""
+        self._all_four_files()
+        conn, cur, inserted = make_db_mock()
+        score_mock = MagicMock(return_value=self._score_dict(is_hitter=False))
+
+        with ExitStack() as s:
+            apply_pipeline_patches(s, conn)
+            s.enter_context(patch("ingestion.pipeline.score_session", score_mock))
+            _pl.run_ingestion(self.tmp, is_hitter=False, log=lambda m: None)
+
+        self.assertIn("public.f_readiness_screen_y",    inserted,
+                      "Y must be inserted in pitcher mode")
+        self.assertIn("public.f_readiness_screen_ir90", inserted,
+                      "IR90 must be inserted in pitcher mode")
+        score_mock.assert_called()
+        self.assertFalse(
+            score_mock.call_args.kwargs.get("is_hitter", True),
+            "score_session must be called with is_hitter=False in pitcher mode",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

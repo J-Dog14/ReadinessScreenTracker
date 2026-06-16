@@ -6,6 +6,7 @@
     const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
     let mode = "auto";
+    let isHitter = false;
     let selectedAthlete = null;
     let currentJobId = null;
     let currentEventSource = null;
@@ -24,6 +25,33 @@
                 $("#athlete-selected").textContent = "";
                 $("#athlete-history").style.display = "none";
             }
+        });
+    });
+
+    // ─── Test type (Pitcher / Hitter) ──────────────────────────────────────
+    $$("#type-chips .chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+            $$("#type-chips .chip").forEach((c) => c.classList.remove("is-active"));
+            chip.classList.add("is-active");
+            isHitter = chip.dataset.type === "hitter";
+            $("#hitter-note").style.display = isHitter ? "" : "none";
+            // Mark Y/IR90 tiles as skipped when hitter mode is on.
+            $$('#file-grid .file-tile:not([data-dynamic])').forEach((tile) => {
+                const m = tile.dataset.movement;
+                if (m === "Y" || m === "IR90") {
+                    if (isHitter) {
+                        tile.classList.remove("found", "missing");
+                        tile.classList.add("is-skipped");
+                        const status = tile.querySelector(".status");
+                        if (status) { status.textContent = "skipped"; status.style.color = "var(--muted)"; }
+                    } else {
+                        tile.classList.remove("is-skipped");
+                        tile.classList.add("missing");
+                        const status = tile.querySelector(".status");
+                        if (status) { status.textContent = "not scanned"; status.style.color = ""; }
+                    }
+                }
+            });
         });
     });
 
@@ -108,12 +136,20 @@
             if (!m) return;
             const status = tile.querySelector(".status");
             const nameSpan = tile.querySelector(".athlete-name");
+            // In hitter mode Y/IR90 are always skipped regardless of what was found.
+            if (isHitter && (m === "Y" || m === "IR90")) {
+                tile.classList.remove("found", "missing");
+                tile.classList.add("is-skipped");
+                if (status) { status.textContent = "skipped"; status.style.color = "var(--muted)"; }
+                if (nameSpan) nameSpan.textContent = "";
+                return;
+            }
             if (found[m]) {
-                tile.classList.remove("missing"); tile.classList.add("found");
+                tile.classList.remove("missing", "is-skipped"); tile.classList.add("found");
                 status.textContent = "found"; status.style.color = "var(--accent-green)";
                 if (nameSpan) nameSpan.textContent = found[m].athlete_name || "";
             } else {
-                tile.classList.add("missing"); tile.classList.remove("found");
+                tile.classList.add("missing"); tile.classList.remove("found", "is-skipped");
                 status.textContent = "not found"; status.style.color = "";
                 if (nameSpan) nameSpan.textContent = "";
             }
@@ -136,6 +172,21 @@
                 if (nameSpan) nameSpan.textContent = "";
             }
         });
+        // Auto-populate grip dominant hand from the detected athlete's DB record.
+        // Takes the first non-null athlete name from any discovered file, resolves
+        // it using the same normalize→exact→fuzzy logic as the pipeline, and sets
+        // the dominant hand dropdown if the athlete has a prior grip entry.
+        const detectedName = Object.values(found).map((f) => f?.athlete_name).find((n) => n);
+        if (detectedName) {
+            try {
+                const lr = await fetch(`/api/athletes/lookup?name=${encodeURIComponent(detectedName)}`);
+                const lj = await lr.json();
+                if (lj.athlete?.dominant_hand) {
+                    $("#grip-dominant").value = lj.athlete.dominant_hand;
+                }
+            } catch (_) { /* non-fatal */ }
+        }
+
         return found;
     }
 
@@ -174,6 +225,7 @@
             output_dir: outputDir,
             power_dir: powerDir || outputDir,
             fs_hz: fsHz,
+            is_hitter: isHitter,
         };
         if (mode === "existing") {
             if (!selectedAthlete) {
@@ -435,4 +487,115 @@
             legend: { font: { size: 10 }, orientation: "h", y: -0.25 },
         };
     }
+
+    // ─── Grip Log ─────────────────────────────────────────────────────────
+    let glAthlete = null;
+    let glSearchTimer = null;
+
+    // Default date input to today.
+    const glDateInput = $("#gl-date");
+    if (glDateInput) {
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm   = String(today.getMonth() + 1).padStart(2, "0");
+        const dd   = String(today.getDate()).padStart(2, "0");
+        glDateInput.value = `${yyyy}-${mm}-${dd}`;
+    }
+
+    $("#gl-athlete-search").addEventListener("input", (e) => {
+        clearTimeout(glSearchTimer);
+        const q = e.target.value.trim();
+        if (q.length < 2) { $("#gl-athlete-results").style.display = "none"; return; }
+        glSearchTimer = setTimeout(async () => {
+            const res  = await fetch(`/api/athletes/search?q=${encodeURIComponent(q)}`);
+            const json = await res.json();
+            const box  = $("#gl-athlete-results");
+            box.innerHTML = "";
+            if (!json.results || !json.results.length) {
+                box.innerHTML = `<div class="item text-muted">No matches</div>`;
+            } else {
+                json.results.forEach((a) => {
+                    const div = document.createElement("div");
+                    div.className = "item";
+                    div.innerHTML = `${escapeHtml(a.name)} <span class="age-tag">${a.age_group || ""}</span>`;
+                    div.addEventListener("click", () => {
+                        glAthlete = a;
+                        $("#gl-athlete-search").value = a.name;
+                        $("#gl-athlete-selected").innerHTML =
+                            `Selected: <strong>${escapeHtml(a.name)}</strong> <span class="mono text-muted">${a.athlete_uuid}</span>`;
+                        box.style.display = "none";
+                        if (a.dominant_hand) { $("#gl-dominant").value = a.dominant_hand; }
+                    });
+                    box.appendChild(div);
+                });
+            }
+            box.style.display = "block";
+        }, 200);
+    });
+
+    document.addEventListener("click", (e) => {
+        if (!e.target.closest("#gl-athlete-results") && !e.target.closest("#gl-athlete-search")) {
+            $("#gl-athlete-results").style.display = "none";
+        }
+    });
+
+    $("#gl-save-btn").addEventListener("click", async () => {
+        const statusEl = $("#gl-status");
+        if (!glAthlete) {
+            statusEl.textContent = "Select an athlete first.";
+            statusEl.style.color = "var(--accent-red)";
+            statusEl.style.display = "";
+            return;
+        }
+        const lRaw = $("#gl-left").value.trim();
+        const rRaw = $("#gl-right").value.trim();
+        const lVal = lRaw !== "" ? parseFloat(lRaw) : null;
+        const rVal = rRaw !== "" ? parseFloat(rRaw) : null;
+        if (lVal === null && rVal === null) {
+            statusEl.textContent = "Enter at least one grip value.";
+            statusEl.style.color = "var(--accent-red)";
+            statusEl.style.display = "";
+            return;
+        }
+        const LBS_PER_KG = 2.2046226;
+        const toKg = (v) => v === null ? null : v / LBS_PER_KG;
+        const payload = {
+            athlete_uuid:  glAthlete.athlete_uuid,
+            session_date:  $("#gl-date").value || null,
+            left_kg:       toKg(lVal),
+            right_kg:      toKg(rVal),
+            dominant_hand: $("#gl-dominant").value || null,
+            notes:         $("#gl-notes").value.trim() || null,
+        };
+
+        $("#gl-save-btn").disabled = true;
+        statusEl.textContent = "Saving…";
+        statusEl.style.color = "var(--muted)";
+        statusEl.style.display = "";
+        try {
+            const res  = await fetch("/api/grip-log", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            const json = await res.json();
+            if (!res.ok || json.error) {
+                statusEl.textContent = "Error: " + (json.error || res.status);
+                statusEl.style.color = "var(--accent-red)";
+            } else {
+                const verb = json.verb === "inserted" ? "Saved" : "Updated";
+                statusEl.textContent = `${verb} grip for ${escapeHtml(json.athlete_name)} on ${json.date}.`;
+                statusEl.style.color = "var(--accent-green)";
+                // Clear fields on success.
+                $("#gl-left").value  = "";
+                $("#gl-right").value = "";
+                $("#gl-notes").value = "";
+            }
+        } catch (e) {
+            statusEl.textContent = "Request failed: " + e;
+            statusEl.style.color = "var(--accent-red)";
+        } finally {
+            $("#gl-save-btn").disabled = false;
+        }
+    });
 })();

@@ -120,11 +120,15 @@ def run_ingestion(
     athlete_uuid_override: Optional[str] = None,
     cancel_event=None,
     grip_payload: Optional[Dict] = None,
+    is_hitter: bool = False,
 ) -> Dict:
     """Run the full pipeline against `output_dir`.
 
     grip_payload (optional): {left_kg, right_kg, dominant_hand, notes} for manual
     grip-strength entry. When provided, upserts a row into f_readiness_screen_grip.
+
+    is_hitter (optional): when True, skips ISO (Y/IR90) ingestion and scores
+    without iso_z.
     """
     summary: Dict = {
         "output_dir":       output_dir,
@@ -201,9 +205,12 @@ def run_ingestion(
     conn = get_connection()
     try:
         # ================================================================
-        # Part 1: ISO movements (I, Y, T, IR90) — unchanged logic
+        # Part 1: ISO movements (I, Y, T, IR90) — skipped for hitters
         # ================================================================
-        for movement, file_path in iso_files.items():
+        if is_hitter:
+            _emit(log, "hitter", "Hitter mode — skipping ISO (Y/IR90) ingestion")
+        _iso_to_process = {} if is_hitter else iso_files
+        for movement, file_path in _iso_to_process.items():
             try:
                 if cancel_event and cancel_event.is_set():
                     _emit(log, "cancelled", "Run cancelled by user.")
@@ -522,7 +529,7 @@ def run_ingestion(
     for (athlete_uuid, date_str) in sessions_seen:
         try:
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
-            score = score_session(athlete_uuid, d)
+            score = score_session(athlete_uuid, d, is_hitter=is_hitter)
             summary["scores"].append({
                 "athlete_uuid": athlete_uuid,
                 "name":         athletes_meta.get(athlete_uuid, ""),
