@@ -541,6 +541,8 @@
 
     $("#gl-save-btn").addEventListener("click", async () => {
         const statusEl = $("#gl-status");
+        $("#gl-comparison").style.display = "none";
+        $("#gl-comparison").innerHTML = "";
         if (!glAthlete) {
             statusEl.textContent = "Select an athlete first.";
             statusEl.style.color = "var(--accent-red)";
@@ -586,6 +588,7 @@
                 const verb = json.verb === "inserted" ? "Saved" : "Updated";
                 statusEl.textContent = `${verb} grip for ${escapeHtml(json.athlete_name)} on ${json.date}.`;
                 statusEl.style.color = "var(--accent-green)";
+                renderGripComparison(json);
                 // Clear fields on success.
                 $("#gl-left").value  = "";
                 $("#gl-right").value = "";
@@ -598,4 +601,36 @@
             $("#gl-save-btn").disabled = false;
         }
     });
+    // ─── Grip log comparison snippet ─────────────────────────────────────
+    function renderGripComparison(json) {
+        const el = $("#gl-comparison");
+        const h = json.history;
+        if (!h || !h.n_sessions) return;   // no prior data — nothing to compare
+
+        function statCard(label, histVal, currVal) {
+            if (histVal == null || currVal == null) return "";
+            const diff = currVal - histVal;
+            const sign = diff >= 0 ? "+" : "";
+            const cls  = diff > 0.05 ? "up" : diff < -0.05 ? "down" : "flat";
+            return `
+              <div class="stat" style="flex:1; min-width:130px;">
+                <div class="stat-label">${label}</div>
+                <div class="stat-value">${histVal.toFixed(1)} lbs</div>
+                <div class="stat-delta ${cls}">${sign}${diff.toFixed(1)} lbs today</div>
+              </div>`;
+        }
+
+        el.innerHTML = `
+          <div class="text-muted" style="font-size:0.78rem; margin-bottom:0.5rem;">
+            vs. ${h.n_sessions} prior session${h.n_sessions !== 1 ? "s" : ""}
+          </div>
+          <div class="row tight" style="flex-wrap:wrap; gap:0.5rem;">
+            ${statCard("L Avg", h.avg_left_lbs,  json.current_left_lbs)}
+            ${statCard("R Avg", h.avg_right_lbs, json.current_right_lbs)}
+            ${statCard("L Max", h.max_left_lbs,  json.current_left_lbs)}
+            ${statCard("R Max", h.max_right_lbs, json.current_right_lbs)}
+          </div>`;
+        el.style.display = "";
+    }
+
 })();

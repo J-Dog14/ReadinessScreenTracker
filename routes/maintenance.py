@@ -330,4 +330,44 @@ def grip_log():
     finally:
         conn.close()
 
-    return jsonify({"ok": True, "verb": verb, "date": date_str, "athlete_name": athlete_name})
+    KG_TO_LBS = 2.2046226
+    history = {"avg_left_lbs": None, "avg_right_lbs": None,
+               "max_left_lbs": None, "max_right_lbs": None, "n_sessions": 0}
+    try:
+        conn2 = get_connection()
+        try:
+            with conn2.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT AVG(left_kg)::float, AVG(right_kg)::float,
+                           MAX(left_kg)::float, MAX(right_kg)::float,
+                           COUNT(*)::int
+                    FROM   public.f_readiness_screen_grip
+                    WHERE  athlete_uuid = %s
+                      AND  session_date != %s
+                    """,
+                    (athlete_uuid, date_str),
+                )
+                row = cur.fetchone()
+                if row and row[4]:
+                    history = {
+                        "avg_left_lbs":  round(row[0] * KG_TO_LBS, 1) if row[0] is not None else None,
+                        "avg_right_lbs": round(row[1] * KG_TO_LBS, 1) if row[1] is not None else None,
+                        "max_left_lbs":  round(row[2] * KG_TO_LBS, 1) if row[2] is not None else None,
+                        "max_right_lbs": round(row[3] * KG_TO_LBS, 1) if row[3] is not None else None,
+                        "n_sessions":    int(row[4]),
+                    }
+        finally:
+            conn2.close()
+    except Exception:
+        pass  # history comparison is non-critical; don't break the save response
+
+    return jsonify({
+        "ok":               True,
+        "verb":             verb,
+        "date":             date_str,
+        "athlete_name":     athlete_name,
+        "current_left_lbs":  round(lkg * KG_TO_LBS, 1) if lkg is not None else None,
+        "current_right_lbs": round(rkg * KG_TO_LBS, 1) if rkg is not None else None,
+        "history":          history,
+    })
