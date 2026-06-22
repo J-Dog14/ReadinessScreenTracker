@@ -49,8 +49,13 @@ log = logging.getLogger(__name__)
 
 DEFAULT_BASELINE_DAYS = 28
 MIN_HISTORY = 2                 # need at least this many prior points to z-score (Tier 3)
-SCORE_SD_TO_POINTS = 15.0       # ±1 SD ≈ ±15 points
+SCORE_SD_TO_POINTS = 20.0       # ±1 SD ≈ ±20 points (increased from 15 — averaging ~35 metrics
+                                #  naturally compresses composite_z toward 0, so a larger
+                                #  multiplier is needed to produce meaningful score spread)
 Z_CLAMP = 3.0                   # cap individual metric z-scores to ±3 SD
+A_TO_B_Z_SCALE = 2.5            # A_TO_B composite_z is systematically compressed because it
+                                #  divides session deltas by cohort SD (larger than personal SD).
+                                #  Empirically ~3x tighter than READINESS tier. Scale it back up.
 BAND_READY = 60
 BAND_FATIGUED = 40
 
@@ -581,11 +586,14 @@ def _score_a_to_b(
         return round(sum(arr) / len(arr), 3) if arr else None
 
     composite_z = sum(all_zs) / len(all_zs)
-    score = max(0.0, min(100.0, 50.0 + SCORE_SD_TO_POINTS * composite_z))
+    # A_TO_B normalizes by cohort SD, which is larger than personal SD, so the
+    # composite_z runs ~3x tighter than READINESS tier. Scale it up before scoring.
+    composite_z_scaled = composite_z * A_TO_B_Z_SCALE
+    score = max(0.0, min(100.0, 50.0 + SCORE_SD_TO_POINTS * composite_z_scaled))
     band = "READY" if score >= BAND_READY else ("FATIGUED" if score < BAND_FATIGUED else "CAUTION")
     return {
         "composite_score":    round(score, 1),
-        "composite_z":        round(composite_z, 3),
+        "composite_z":        round(composite_z, 3),  # stored unscaled for transparency
         "band":               band,
         "cmj_z":              _g_avg(group_zs.get("cmj", [])),
         "ppu_z":              _g_avg(group_zs.get("ppu", [])),

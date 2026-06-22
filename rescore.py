@@ -1,9 +1,10 @@
+"""
+Full backfill — recomputes and upserts scores for every session in f_readiness_screen_score.
+Run after any change to scoring logic (e.g. SCORE_SD_TO_POINTS, Z_CLAMP, metric lists).
+Sessions are processed in chronological order so that rolling baseline lookups are consistent.
+"""
 from ingestion.scoring import score_session
 from db.connection import get_connection
-from datetime import date
-
-START = date(2026, 6, 3)
-END   = date(2026, 6, 16)
 
 conn = get_connection()
 try:
@@ -11,19 +12,29 @@ try:
         cur.execute(
             "SELECT DISTINCT athlete_uuid, session_date"
             " FROM public.f_readiness_screen_score"
-            " WHERE session_date BETWEEN %s AND %s"
             " ORDER BY session_date, athlete_uuid",
-            (START, END),
         )
         sessions = cur.fetchall()
 finally:
     conn.close()
 
-print("Rescoring", len(sessions), "sessions...")
-for athlete_uuid, session_date in sessions:
-    result = score_session(athlete_uuid, session_date)
-    band = result["band"]
-    composite = result["composite_score"]
-    grip_z = result.get("grip_z")
-    print(session_date, athlete_uuid[:8] + "...", band.ljust(22), "composite=" + str(composite), "grip_z=" + str(grip_z))
-print("Done.")
+print(f"Rescoring {len(sessions)} sessions (all-time)...")
+errors = []
+for i, (athlete_uuid, session_date) in enumerate(sessions, 1):
+    try:
+        result = score_session(athlete_uuid, session_date)
+        band      = result["band"]
+        composite = result["composite_score"]
+        tier      = result.get("scoring_tier", "?")
+        print(f"[{i}/{len(sessions)}] {session_date}  {athlete_uuid[:8]}...  "
+              f"{tier.ljust(12)}  {band.ljust(22)}  score={composite}")
+    except Exception as exc:
+        msg = f"  ERROR {session_date} {athlete_uuid[:8]}...: {exc}"
+        print(msg)
+        errors.append(msg)
+
+print(f"\nDone. {len(sessions) - len(errors)} rescored, {len(errors)} errors.")
+if errors:
+    print("Errors:")
+    for e in errors:
+        print(e)
