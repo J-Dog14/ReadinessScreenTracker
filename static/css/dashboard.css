@@ -83,7 +83,4 @@
 .heatmap-legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
 .heatmap-legend i { width: 11px; height: 11px; border-radius: 3px; }
 
-/* ── Grip card — hide when no data ──────────────────────────────────────── */
-#grip-card {
-    display: none;
-}
+/* grip-card is always visible; JS handles empty-state message */

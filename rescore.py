@@ -24,7 +24,7 @@ for i, (athlete_uuid, session_date) in enumerate(sessions, 1):
     try:
         result = score_session(athlete_uuid, session_date)
         band      = result["band"]
-        composite = result["composite_score"]
+        composite = ult["composite_score"]
         tier      = result.get("scoring_tier", "?")
         print(f"[{i}/{len(sessions)}] {session_date}  {athlete_uuid[:8]}...  "
               f"{tier.ljust(12)}  {band.ljust(22)}  score={composite}")

@@ -842,6 +842,7 @@ def upsert_score(athlete_uuid: str, session_date: date, score_dict: Dict) -> Non
                     score_dict["band"],
                     score_dict["cmj_z"],
                     score_dict["ppu_z"],
+        
                     score_dict["iso_z"],
                     score_dict["power_curve_z"],
                     score_dict.get("grip_z"),

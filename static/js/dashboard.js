@@ -226,7 +226,7 @@
             return;
         }
         const sorted = [...metrics].filter((m) => m.z != null).sort((a, b) => (b.z || 0) - (a.z || 0));
-        const labels = sorted.map((m) => m.label);
+        const labels = sorted.map((m) => metricLabel(m.label));
         const zs = sorted.map((m) => m.z);
         const colors = sorted.map((m) =>
             m.flag === "rise" ? "#4ade80" :
@@ -297,70 +297,46 @@
         const series = grip?.timeseries || [];
         const card = document.getElementById("grip-card");
 
+        if (card) card.style.display = "";
         if (!series.length) {
-            if (card) card.style.display = "none";
+            const plotEl = document.getElementById("grip-plot");
+            if (plotEl) plotEl.innerHTML = `<div class="text-muted" style="padding:2rem 0; font-size:0.88rem; text-align:center;">No grip strength data yet for this athlete.</div>`;
+            const grid = document.getElementById("grip-stats");
+            if (grid) grid.innerHTML = "";
             return;
         }
-        if (card) card.style.display = "";
 
+        const KG_TO_LB = 2.20462;
         const x = series.map((r) => fmtDate(r.date));
 
-        // Timeseries — left, right, max
-        Plotly.react("grip-ts-plot", [
+        Plotly.react("grip-plot", [
             {
-                type: "scatter", mode: "lines+markers", x, y: series.map((r) => r.left_kg),
-                name: "Left (kg)", line: { color: "#8be9fd", width: 2 }, marker: { size: 7 },
-                hovertemplate: "%{x}<br>Left: %{y:.1f} kg<extra></extra>",
+                type: "scatter", mode: "lines+markers", x, y: series.map((r) => r.left_kg * KG_TO_LB),
+                name: "Left (lbs)", line: { color: "#8be9fd", width: 2 }, marker: { size: 7 },
+                hovertemplate: "%{x}<br>Left: %{y:.1f} lbs<extra></extra>",
             },
             {
-                type: "scatter", mode: "lines+markers", x, y: series.map((r) => r.right_kg),
-                name: "Right (kg)", line: { color: "#50fa7b", width: 2 }, marker: { size: 7 },
-                hovertemplate: "%{x}<br>Right: %{y:.1f} kg<extra></extra>",
+                type: "scatter", mode: "lines+markers", x, y: series.map((r) => r.right_kg * KG_TO_LB),
+                name: "Right (lbs)", line: { color: "#50fa7b", width: 2 }, marker: { size: 7 },
+                hovertemplate: "%{x}<br>Right: %{y:.1f} lbs<extra></extra>",
             },
             {
-                type: "scatter", mode: "lines+markers", x, y: series.map((r) => r.max_kg),
-                name: "Max (kg)", line: { color: "#bd93f9", width: 2, dash: "dot" }, marker: { size: 5 },
-                hovertemplate: "%{x}<br>Max: %{y:.1f} kg<extra></extra>",
+                type: "scatter", mode: "lines+markers", x, y: series.map((r) => r.max_kg * KG_TO_LB),
+                name: "Max (lbs)", line: { color: "#bd93f9", width: 2, dash: "dot" }, marker: { size: 5 },
+                hovertemplate: "%{x}<br>Max: %{y:.1f} lbs<extra></extra>",
             },
         ], {
             ...layoutBase,
-            title: { text: "Grip strength over time", font: { size: 13 }, x: 0, xanchor: "left" },
-            yaxis: { ...layoutBase.yaxis, title: "kg" },
+            yaxis: { ...layoutBase.yaxis, title: "Grip (lbs)" },
             xaxis: { ...layoutBase.xaxis, type: "category" },
-        }, config);
-
-        // Asymmetry timeseries — color-coded by threshold
-        const asymColors = series.map((r) => {
-            const v = r.asymmetry_pct;
-            if (v == null) return "#6e7681";
-            if (v < 10) return "#4ade80";
-            if (v < 15) return "#facc15";
-            return "#f87171";
-        });
-        Plotly.react("grip-asym-plot", [{
-            type: "scatter", mode: "lines+markers", x,
-            y: series.map((r) => r.asymmetry_pct),
-            line: { color: "#2c99d4", width: 2 },
-            marker: { size: 10, color: asymColors, line: { color: "#0f1419", width: 1 } },
-            name: "Asymmetry %",
-            hovertemplate: "%{x}<br>Asymmetry: %{y:.1f}%<extra></extra>",
-        }], {
-            ...layoutBase,
-            title: { text: "L/R asymmetry (%)", font: { size: 13 }, x: 0, xanchor: "left" },
-            yaxis: { ...layoutBase.yaxis, title: "Asymmetry (%)", rangemode: "tozero" },
-            xaxis: { ...layoutBase.xaxis, type: "category" },
-            shapes: [
-                { type: "line", x0: 0, x1: 1, xref: "paper", y0: 10, y1: 10, line: { color: "#facc15", dash: "dot", width: 1 } },
-                { type: "line", x0: 0, x1: 1, xref: "paper", y0: 15, y1: 15, line: { color: "#f87171", dash: "dot", width: 1 } },
-            ],
         }, config);
 
         // Stat grid — latest L, R, max, asymmetry
         const grid = document.getElementById("grip-stats");
         grid.innerHTML = "";
-        grid.appendChild(latestPrevDelta("Left kg",      series.map((r) => r.left_kg)));
-        grid.appendChild(latestPrevDelta("Right kg",     series.map((r) => r.right_kg)));
-        grid.appendChild(latestPrevDelta("Max kg",       series.map((r) => r.max_kg)));
+        grid.appendChild(latestPrevDelta("Left (lbs)",   series.map((r) => r.left_kg * KG_TO_LB)));
+        grid.appendChild(latestPrevDelta("Right (lbs)",  series.map((r) => r.right_kg * KG_TO_LB)));
+        grid.appendChild(latestPrevDelta("Max (lbs)",    series.map((r) => r.max_kg * KG_TO_LB)));
         grid.appendChild(latestPrevDelta("Asymmetry %",  series.map((r) => r.asymmetry_pct)));
     }
 
@@ -372,6 +348,12 @@
 
         const rsTsRows  = ts.filter((r) => r.source !== "athletic_screen");
         const athTsRows = ts.filter((r) => r.source === "athletic_screen");
+
+        // Build a sorted category array so athletic-screen dates land in the right spot.
+        const jhCategoryArray = [...new Set([
+            ...rsTsRows.map((r) => r.date),
+            ...athTsRows.map((r) => r.date),
+        ])].sort().map(fmtDate);
 
         const jhTraces = [];
         if (rsTsRows.length) {
@@ -389,7 +371,7 @@
                 type: "scatter", mode: "markers",
                 x: athTsRows.map((r) => fmtDate(r.date)),
                 y: athTsRows.map((r) => r.jump_height),
-                marker: { size: 10, symbol: "circle-open", color: "#2c99d4", line: { width: 2, color: "#2c99d4" } },
+                marker: { size: 10, symbol: "diamond-open", color: "#2c99d4", line: { width: 2, color: "#2c99d4" } },
                 name: "Athletic screen",
                 hovertemplate: "%{x}<br>JH: %{y:.2f} in (athletic screen)<extra></extra>",
             });
@@ -398,7 +380,7 @@
             ...layoutBase,
             title: { text: `Jump height (${kind.toUpperCase()})`, font: { size: 13 }, x: 0, xanchor: "left" },
             yaxis: { ...layoutBase.yaxis, title: "Jump height (in)" },
-            xaxis: { ...layoutBase.xaxis, type: "category" },
+            xaxis: { ...layoutBase.xaxis, type: "category", categoryorder: "array", categoryarray: jhCategoryArray },
         }, config);
 
         const fvTraces = [
@@ -537,62 +519,65 @@
         }
         const xs_cmj = cmj.map((r) => fmtDate(r.date));
         const xs_ppu = ppu.map((r) => fmtDate(r.date));
+        // Sorted category array keeps CMJ and PPU dates in chronological order on a shared axis.
+        const pcCategoryArray = [...new Set([
+            ...cmj.map((r) => r.date),
+            ...ppu.map((r) => r.date),
+        ])].sort().map(fmtDate);
         const traces = [];
 
         if (cmj.length) traces.push({
             type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.peak_power_w),
-            line: { color: "#50fa7b" }, marker: { size: 7 }, name: "CMJ peak power (W)", yaxis: "y",
+            line: { color: "#50fa7b", width: 2 }, marker: { size: 7 }, name: "CMJ peak power (W)", yaxis: "y",
             hovertemplate: "%{x}<br>Peak: %{y:.0f} W<extra>CMJ</extra>",
         });
         if (ppu.length) traces.push({
             type: "scatter", mode: "lines+markers", x: xs_ppu, y: ppu.map((r) => r.peak_power_w),
-            line: { color: "#ffb86c" }, marker: { size: 7 }, name: "PPU peak power (W)", yaxis: "y",
+            line: { color: "#ffb86c", width: 2 }, marker: { size: 7 }, name: "PPU peak power (W)", yaxis: "y",
             hovertemplate: "%{x}<br>Peak: %{y:.0f} W<extra>PPU</extra>",
         });
         if (cmj.length) traces.push({
             type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.auc_j),
-            line: { color: "#50fa7b", dash: "longdash" }, marker: { size: 5 },
+            line: { color: "#50fa7b", dash: "longdash", width: 1.5 }, marker: { size: 5 },
             name: "CMJ AUC (J)", yaxis: "y", visible: "legendonly",
             hovertemplate: "%{x}<br>AUC: %{y:.0f} J<extra>CMJ</extra>",
         });
         if (ppu.length) traces.push({
             type: "scatter", mode: "lines+markers", x: xs_ppu, y: ppu.map((r) => r.auc_j),
-            line: { color: "#ffb86c", dash: "longdash" }, marker: { size: 5 },
+            line: { color: "#ffb86c", dash: "longdash", width: 1.5 }, marker: { size: 5 },
             name: "PPU AUC (J)", yaxis: "y", visible: "legendonly",
             hovertemplate: "%{x}<br>AUC: %{y:.0f} J<extra>PPU</extra>",
         });
         if (cmj.length) {
-            traces.push({ type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.rpd_max),
-                line: { color: "#bd93f9", dash: "dot" }, marker: { size: 6 }, name: "CMJ RPD max (W/s)", yaxis: "y2",
-                hovertemplate: "%{x}<br>RPD: %{y:.0f} W/s<extra>CMJ</extra>" });
-            traces.push({ type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.rise_slope),
-                line: { color: "#8be9fd", dash: "dot" }, marker: { size: 5 }, name: "CMJ rise slope (W/s)", yaxis: "y2", visible: "legendonly",
-                hovertemplate: "%{x}<br>Rise: %{y:.0f} W/s<extra>CMJ</extra>" });
+            traces.push({
+                type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.rpd_max),
+                line: { color: "#bd93f9", dash: "dot", width: 1.5 }, marker: { size: 5 },
+                name: "CMJ RPD max (W/s)", yaxis: "y2", visible: "legendonly",
+                hovertemplate: "%{x}<br>RPD: %{y:.0f} W/s<extra>CMJ</extra>",
+            });
+            traces.push({
+                type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.rise_slope),
+                line: { color: "#8be9fd", dash: "dot", width: 1.5 }, marker: { size: 5 },
+                name: "CMJ rise slope (W/s)", yaxis: "y2", visible: "legendonly",
+                hovertemplate: "%{x}<br>Rise: %{y:.0f} W/s<extra>CMJ</extra>",
+            });
         }
         if (ppu.length) {
-            traces.push({ type: "scatter", mode: "lines+markers", x: xs_ppu, y: ppu.map((r) => r.rpd_max),
-                line: { color: "#ff79c6", dash: "dot" }, marker: { size: 6 }, name: "PPU RPD max (W/s)", yaxis: "y2",
-                hovertemplate: "%{x}<br>RPD: %{y:.0f} W/s<extra>PPU</extra>" });
-        }
-        if (cmj.length) {
-            traces.push({ type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.fwhm),
-                line: { color: "#f1fa8c" }, marker: { size: 5 }, name: "CMJ FWHM (s)", yaxis: "y3", visible: "legendonly" });
-            traces.push({ type: "scatter", mode: "lines+markers", x: xs_cmj, y: cmj.map((r) => r.decay),
-                line: { color: "#f1fa8c", dash: "dash" }, marker: { size: 5 }, name: "CMJ decay 90→10 (s)", yaxis: "y3", visible: "legendonly" });
-        }
-        if (ppu.length) {
-            traces.push({ type: "scatter", mode: "lines+markers", x: xs_ppu, y: ppu.map((r) => r.fwhm),
-                line: { color: "#ffa07a" }, marker: { size: 5 }, name: "PPU FWHM (s)", yaxis: "y3", visible: "legendonly" });
+            traces.push({
+                type: "scatter", mode: "lines+markers", x: xs_ppu, y: ppu.map((r) => r.rpd_max),
+                line: { color: "#ff79c6", dash: "dot", width: 1.5 }, marker: { size: 5 },
+                name: "PPU RPD max (W/s)", yaxis: "y2", visible: "legendonly",
+                hovertemplate: "%{x}<br>RPD: %{y:.0f} W/s<extra>PPU</extra>",
+            });
         }
 
         Plotly.react(el, traces, {
             ...layoutBase,
-            xaxis:  { ...layoutBase.xaxis, type: "category", domain: [0, 0.86] },
+            xaxis:  { ...layoutBase.xaxis, type: "category", categoryorder: "array", categoryarray: pcCategoryArray, domain: [0, 0.88] },
             yaxis:  { ...layoutBase.yaxis, title: "Peak power (W)" },
             yaxis2: { ...layoutBase.yaxis, title: "RPD / rise (W/s)", overlaying: "y", side: "right", showgrid: false },
-            yaxis3: { ...layoutBase.yaxis, title: "Duration (s)", overlaying: "y", side: "right", position: 1.0, showgrid: false },
             legend: { ...layoutBase.legend, orientation: "h", y: -0.22 },
-            margin: { l: 50, r: 95, t: 28, b: 40 },
+            margin: { l: 50, r: 65, t: 28, b: 40 },
         }, config);
     }
 
@@ -611,7 +596,7 @@
         dates.forEach((d) => { html += `<th class="heatmap-date">${fmtDate(d)}</th>`; });
         html += `</tr></thead><tbody>`;
         metrics.forEach((metric, mi) => {
-            html += `<tr><td class="heatmap-metric-label">${escape(metric)}</td>`;
+            html += `<tr><td class="heatmap-metric-label">${escape(metricLabel(metric))}</td>`;
             dates.forEach((_, di) => {
                 const flag = cells[di]?.[mi] || null;
                 const color = flag ? (colorMap[flag] || "#333") : "#2a3340";
@@ -622,6 +607,49 @@
         });
         html += `</tbody></table>`;
         container.innerHTML = html;
+    }
+
+    // ─── Metric label lookup ─────────────────────────────────────────────
+    const METRIC_LABELS = {
+        "cmj.jump_height":              "CMJ Jump Height (in)",
+        "cmj.pp_w_per_kg":              "CMJ Peak Power (W/kg)",
+        "cmj.force_at_pp":              "CMJ Force at Peak Power",
+        "cmj.vel_at_pp":                "CMJ Velocity at Peak Power",
+        "cmj.mrsi":                     "CMJ mRSI",
+        "cmj.contraction_time_s":       "CMJ Contraction Time (s)",
+        "cmj.ecc_con_duration_ratio":   "CMJ Ecc/Con Duration Ratio",
+        "cmj.eccentric_mean_power_w":   "CMJ Eccentric Mean Power (W)",
+        "cmj.peak_grf_bw_ratio":        "CMJ Peak GRF (BW)",
+        "cmj.rfd_0_100ms":              "CMJ RFD 0-100ms",
+        "cmj.concentric_impulse_ns":    "CMJ Concentric Impulse (N-s)",
+        "ppu.jump_height":              "PPU Jump Height (in)",
+        "ppu.pp_w_per_kg":              "PPU Peak Power (W/kg)",
+        "ppu.force_at_pp":              "PPU Force at Peak Power",
+        "ppu.vel_at_pp":                "PPU Velocity at Peak Power",
+        "ppu.mrsi":                     "PPU mRSI",
+        "ppu.contraction_time_s":       "PPU Contraction Time (s)",
+        "ppu.ecc_con_duration_ratio":   "PPU Ecc/Con Duration Ratio",
+        "ppu.eccentric_mean_power_w":   "PPU Eccentric Mean Power (W)",
+        "ppu.peak_grf_bw_ratio":        "PPU Peak GRF (BW)",
+        "ppu.rfd_0_100ms":              "PPU RFD 0-100ms",
+        "ppu.concentric_impulse_ns":    "PPU Concentric Impulse (N-s)",
+        "power_curve.peak_power_w":         "Power Curve Peak Power (W)",
+        "power_curve.rpd_max_w_per_s":      "Power Curve RPD Max (W/s)",
+        "power_curve.rise_slope_w_per_s":   "Power Curve Rise Slope (W/s)",
+        "power_curve.rise_time_10_90_s":    "Power Curve Rise Time 10-90% (s)",
+        "power_curve.auc_j":                "Power Curve AUC (J)",
+        "y.max_force":      "Y-Iso Max Force (N)",
+        "y.time_to_max":    "Y-Iso Time to Max (s)",
+        "ir90.max_force":   "IR90 Max Force (N)",
+        "ir90.time_to_max": "IR90 Time to Max (s)",
+        "grip.right_kg":       "Grip Right (kg)",
+        "grip.left_kg":        "Grip Left (kg)",
+        "grip.max_kg":         "Grip Max (kg)",
+        "grip.asymmetry_pct":  "Grip Asymmetry (%)",
+    };
+    function metricLabel(key) {
+        if (METRIC_LABELS[key]) return METRIC_LABELS[key];
+        return key.replace(/[_.]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     }
 
     // ─── Stat helpers ─────────────────────────────────────────────────────
@@ -646,13 +674,13 @@
     }
 
     function fmtDate(iso) {
-        if (!iso) return "—";
+        if (!iso) return "\u2014";
         const [y, m, d] = iso.split("-");
         return `${m}/${d}/${y.slice(2)}`;
     }
 
     function formatNum(v) {
-        if (v == null || Number.isNaN(v)) return "—";
+        if (v == null || Number.isNaN(v)) return "\u2014";
         if (Math.abs(v) >= 100) return v.toFixed(0);
         if (Math.abs(v) >= 10)  return v.toFixed(1);
         return v.toFixed(2);
