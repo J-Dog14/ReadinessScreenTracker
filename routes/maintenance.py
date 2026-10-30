@@ -21,8 +21,11 @@ from flask import Blueprint, Response, jsonify, render_template, request, stream
 from config import get_output_dir, get_power_dir, get_power_sample_rate_hz
 from db.connection import get_connection
 from ingestion.athlete_manager import search_athletes
-from ingestion.file_parsers import ASCII_FILES, discover_cmj_ppu_trials, discover_txt_files, extract_name
-from ingestion.pipeline import _calc_age, _upsert, run_ingestion
+from ingestion.pipeline import _calc_age, _upsert, find_readiness_sessions, run_ingestion
+
+# Static tiles on the maintenance page (CMJ / PPU tiles are dynamic, one per trial).
+ASCII_FILES = {"Y": "Why *.c3d", "IR90": "IR90 *.c3d"}
+_C3D_CODE = {"WHY": "Y", "IR90": "IR90", "EYE": "I", "TEE": "T", "CMJ": "CMJ", "PPU": "PPU"}
 
 bp = Blueprint("maintenance", __name__)
 
@@ -74,21 +77,28 @@ def scan():
     output_dir = request.args.get("dir", "").strip()
     if not output_dir:
         return jsonify({"error": "dir required"}), 400
-    found = discover_txt_files(output_dir)
-    for trial in discover_cmj_ppu_trials(output_dir):
-        found[trial["trial_name"]] = trial["file_path"]
-
-    files_out = {}
-    for movement, file_path in found.items():
-        athlete_name = None
+    import os
+    import re
+    from ingestion.c3d.session_meta import parse_session_xml
+    if not os.path.isdir(output_dir):
+        return jsonify({"dir": output_dir, "files": {}, "error": "folder not found"})
+    folders, _root, target = find_readiness_sessions(output_dir)
+    files_out, sessions = {}, []
+    for f in folders:
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
-                athlete_name = extract_name(fh.readline())
-        except OSError:
-            pass
-        files_out[movement] = {"path": file_path, "athlete_name": athlete_name}
-
-    return jsonify({"dir": output_dir, "files": files_out})
+            name = parse_session_xml(f / "session.xml").get("subject_name")
+        except Exception:
+            name = None
+        name = name or f.parent.name.rpartition("_")[0] or f.parent.name
+        sessions.append({"folder": f"{f.parent.name}/{f.name}", "athlete_name": name})
+        for c in sorted(f.glob("*.c3d")):
+            m = re.match(r"^(CMJ|PPU|EYE|TEE|WHY|IR90)\s*(\d+)\.c3d$", c.name, re.I)
+            if not m:
+                continue
+            mv = _C3D_CODE[m.group(1).upper()]
+            key = f"{mv}{m.group(2)}" if mv in ("CMJ", "PPU") else mv
+            files_out.setdefault(key, {"path": str(c), "athlete_name": name})
+    return jsonify({"dir": output_dir, "files": files_out, "sessions": sessions, "session_date": target})
 
 
 # ─── Run ────────────────────────────────────────────────────────────────────

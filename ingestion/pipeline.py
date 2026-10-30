@@ -1,29 +1,38 @@
 """
-End-to-end ingestion pipeline.
+End-to-end ingestion pipeline (Readiness Screen v2 - straight from c3d).
 
-Given an Output Files folder:
-  1. Parse the two active ISO movement txt files (Y, IR90) — static filenames.
-     I and T are kept in ISO_TABLE for historical queries but are no longer ingested.
-  2. Parse CMJ/PPU trial files (CMJ1.txt, CMJ2.txt, PPU1.txt, …) — Athletic Screen format.
-     For each trial:
-       a. Parse 5-column summary data.
-       b. Load matching *_Power.txt and run full power-curve analysis (including phase metrics).
-       c. Upsert row into f_readiness_screen_{cmj|ppu} with inline power and phase metrics.
-       d. Persist curve metrics to f_readiness_screen_power_curve (scoring reads from there).
-  3. Optionally upsert grip strength row from grip_payload (manual entry).
-  4. Resolve athlete UUIDs — match-only, never create.
-  5. Update has_readiness_screen_data flag in d_athletes.
-  6. Compute composite readiness score.
+The Visual3D Output Files step is retired: its CMJ/PPU power was wrong (velocity integrated forward
+from frame 1). This reads each readiness session's c3d + session.xml directly - the same processor
+the backend uses (ingestion/c3d, vendored from OctaneBiomechBackend readinessScreen/v2) - and writes
+the same warehouse tables:
+
+    public.f_readiness_screen_v2_cmj / _ppu    one row per jump trial
+    public.f_readiness_screen_v2_iso           I / Y / T / IR90, one row per trial
+    public.f_readiness_screen_v2_force_curve   offset-corrected FP3 Fz per trial
+
+Readers (scoring, dashboard) use the v_readiness_screen_* views over those tables.
+
+Given a folder:
+  * a readiness session folder (has session.xml)            -> that session
+  * the QTM Data root (D:/Athletic Screen 2.0/Data)          -> readiness sessions dated today,
+    otherwise the most recent readiness date (same rule the Output Files flow used).
+    With an athlete selected, only that athlete's folders are considered.
+Then per session: process c3d -> resolve athlete (match only, never create) -> replace the session's
+v2 rows + curves -> grip (manual entry) -> flags -> composite score.
 """
 from __future__ import annotations
 
 import os
 import re
 import sys
+import tempfile
 from datetime import date, datetime
+from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 
 from db.connection import get_connection
 from .age_utils import (
@@ -37,59 +46,18 @@ from .athlete_manager import (
     extract_source_athlete_id,
     get_athlete_dob,
     get_or_create_athlete,
+    normalize_name_for_matching,
     update_athlete_age_group,
     update_athlete_data_flag,
 )
-from .file_parsers import (
-    ASCII_FILES,
-    discover_txt_files,
-    discover_cmj_ppu_trials,
-    find_session_xml,
-    normalize_gender,
-    parse_session_xml,
-    parse_txt_file,
-    peek_file_date,
-)
-from .power_analysis import (
-    analyze_phase_metrics_from_force,
-    analyze_power_curve_advanced,
-    load_power_txt,
-)
-from .units import inches_to_meters
+from .c3d import PROCESSOR_VERSION, schema
+from .c3d.process import ISO, process_session
+from .c3d.session_meta import parse_session_xml
 from .scoring import score_session
 
-
-# Fact tables for the four ISO movements.
-ISO_TABLE = {
-    "I":    "f_readiness_screen_i",
-    "Y":    "f_readiness_screen_y",
-    "T":    "f_readiness_screen_t",
-    "IR90": "f_readiness_screen_ir90",
-}
-
-CMJ_PPU_TABLE = {
-    "CMJ": "f_readiness_screen_cmj",
-    "PPU": "f_readiness_screen_ppu",
-}
-
-# All power-curve columns written inline into the CMJ/PPU fact table.
-POWER_CURVE_COLS = [
-    "peak_power_w", "time_to_peak_s", "rpd_max_w_per_s", "time_to_rpd_max_s",
-    "rise_time_10_90_s", "fwhm_s", "auc_j", "work_early_pct", "decay_90_10_s",
-    "t_com_norm_0to1", "skewness", "kurtosis", "spectral_centroid_hz",
-]
-
-# Phase-analysis columns added in v2 — written to both CMJ/PPU and power_curve tables.
-PHASE_COLS = [
-    "contraction_time_s", "eccentric_duration_s", "concentric_duration_s",
-    "ecc_con_duration_ratio", "eccentric_mean_power_w", "eccentric_peak_power_w",
-    "eccentric_auc_j", "concentric_auc_j", "mrsi",
-]
-
-# Force-derived columns added in v2.1 — written to CMJ/PPU tables only.
-FORCE_COLS = [
-    "peak_grf_n", "peak_grf_bw_ratio", "rfd_0_100ms", "concentric_impulse_ns",
-]
+SESSION_TYPE = "readiness screen"
+TEST_RE = re.compile(r"^\s*(?:test|sample)", re.I)
+DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
 
 def _emit(log: Callable[[str], None], stage: str, msg: str) -> None:
@@ -100,501 +68,105 @@ def _safe(v):
     """Convert numpy scalars / NaN to plain Python types for psycopg2."""
     if v is None:
         return None
-    try:
-        import math
-        import numpy as np
-        if isinstance(v, (np.integer, np.floating)):
-            v = v.item()
-        if isinstance(v, float) and math.isnan(v):
-            return None
-    except ImportError:
-        pass
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating, float)):
+        return float(v) if np.isfinite(v) else None
+    if isinstance(v, np.bool_):
+        return bool(v)
     return v
 
 
-def run_ingestion(
-    output_dir: str,
-    power_dir: Optional[str] = None,
-    fs_hz: float = 1000.0,
-    log: Callable[[str], None] = print,
-    athlete_uuid_override: Optional[str] = None,
-    cancel_event=None,
-    grip_payload: Optional[Dict] = None,
-    is_hitter: bool = False,
-) -> Dict:
-    """Run the full pipeline against `output_dir`.
+# ---------------------------------------------------------------------------
+# Session discovery
+# ---------------------------------------------------------------------------
 
-    grip_payload (optional): {left_kg, right_kg, dominant_hand, notes} for manual
-    grip-strength entry. When provided, upserts a row into f_readiness_screen_grip.
-
-    is_hitter (optional): when True, skips ISO (Y/IR90) ingestion and scores
-    without iso_z.
-    """
-    summary: Dict = {
-        "output_dir":       output_dir,
-        "files_found":      {},
-        "rows_inserted":    0,
-        "rows_updated":     0,
-        "athletes":         [],
-        "power_curve_rows": 0,
-        "scores":           [],
-        "errors":           [],
-    }
-
-    if power_dir is None:
-        power_dir = output_dir
-
-    if not os.path.isdir(output_dir):
-        msg = f"Folder not found: {output_dir}"
-        _emit(log, "ERROR", msg)
-        summary["errors"].append(msg)
-        return summary
-
-    # ---- Discover files -----------------------------------------------
-    iso_files = discover_txt_files(output_dir)
-    cmj_ppu_trials = discover_cmj_ppu_trials(output_dir)
-
-    summary["files_found"] = {
-        **{m: os.path.basename(p) for m, p in iso_files.items()},
-        **{t["trial_name"]: os.path.basename(t["file_path"]) for t in cmj_ppu_trials},
-    }
-
-    if not iso_files and not cmj_ppu_trials:
-        _emit(log, "scan", "No movement files found. Nothing to do.")
-        return summary
-
-    _emit(log, "scan", f"Scanning {output_dir}")
-    for m, p in iso_files.items():
-        _emit(log, "scan", f"  found {m} -> {os.path.basename(p)}")
-    for t in cmj_ppu_trials:
-        _emit(log, "scan", f"  found {t['movement_type']} trial -> {os.path.basename(t['file_path'])}")
-
-    # ---- Date filtering --------------------------------------------------
-    # Peek line 0 of every discovered file to collect session dates cheaply.
-    all_file_dates: Dict[str, Optional[str]] = {}
-    for _fp in list(iso_files.values()) + [t["file_path"] for t in cmj_ppu_trials]:
-        all_file_dates[_fp] = peek_file_date(_fp)
-
-    unique_dates = {d for d in all_file_dates.values() if d}
-    today_str = date.today().strftime("%Y-%m-%d")
-
-    if today_str in unique_dates:
-        target_date = today_str
-        _emit(log, "filter", f"Today's date {target_date} found — processing only today's files")
-    elif unique_dates:
-        target_date = max(unique_dates)
-        _emit(log, "filter", f"No files from today — processing most recent date: {target_date}")
-    else:
-        target_date = None
-        _emit(log, "filter", "Could not determine any date from files — processing all")
-
-    # Session.xml — used to default gender.
-    session_gender = "Male"
-    xml_path = find_session_xml(output_dir)
-    if xml_path:
-        try:
-            xml_data = parse_session_xml(xml_path)
-            session_gender = normalize_gender(xml_data.get("gender"))
-            _emit(log, "session", f"Session.xml: name={xml_data.get('name')}, gender={session_gender}")
-        except Exception as e:
-            _emit(log, "session", f"Could not parse Session.xml ({e}); defaulting gender=Male")
-
-    sessions_seen: set = set()
-    athletes_meta: Dict[str, str] = {}  # uuid -> display name
-
-    conn = get_connection()
+def _is_readiness(folder: Path) -> bool:
     try:
-        # ================================================================
-        # Part 1: ISO movements (I, Y, T, IR90) — skipped for hitters
-        # ================================================================
-        if is_hitter:
-            _emit(log, "hitter", "Hitter mode — skipping ISO (Y/IR90) ingestion")
-        _iso_to_process = {} if is_hitter else iso_files
-        for movement, file_path in _iso_to_process.items():
-            try:
-                if cancel_event and cancel_event.is_set():
-                    _emit(log, "cancelled", "Run cancelled by user.")
-                    break
+        meta = parse_session_xml(folder / "session.xml")
+    except Exception:
+        return False
+    return SESSION_TYPE in {t.lower() for t in meta["session_types"]}
 
-                file_date = all_file_dates.get(file_path)
-                if target_date is not None and file_date != target_date:
-                    _emit(log, "skip",
-                          f"{os.path.basename(file_path)}: date {file_date} does not match target {target_date}")
-                    continue
 
-                parsed = parse_txt_file(file_path, movement)
-                if not parsed:
-                    _emit(log, "parse", f"  {movement}: failed to parse {os.path.basename(file_path)}")
-                    summary["errors"].append(f"parse failed: {file_path}")
-                    continue
-
-                name = parsed["name"]
-                date_str = parsed["date"]
-
-                athlete_uuid, date_str = _resolve_athlete(
-                    name, date_str, athlete_uuid_override, session_gender,
-                    athletes_meta, log, summary,
-                )
-                if athlete_uuid is None:
-                    continue
-
-                update_athlete_data_flag(athlete_uuid)
-
-                age_at_collection, age_group, date_str = _calc_age(athlete_uuid, date_str)
-
-                table = ISO_TABLE[movement]
-                # When UUID override is active the file-path name may belong to a
-                # different person. Use the resolved athlete's display name instead.
-                resolved_name = athletes_meta.get(athlete_uuid, name)
-                src_id = extract_source_athlete_id(resolved_name)
-
-                insert_data = {
-                    "athlete_uuid":      athlete_uuid,
-                    "session_date":      date_str,
-                    "source_system":     "readiness_screen",
-                    "source_athlete_id": src_id,
-                    "age_at_collection": age_at_collection,
-                    "age_group":         age_group,
-                    "avg_force":         parsed.get("Avg_Force"),
-                    "avg_force_norm":    parsed.get("Avg_Force_Norm"),
-                    "max_force":         parsed.get("Max_Force"),
-                    "max_force_norm":    parsed.get("Max_Force_Norm"),
-                    "time_to_max":       parsed.get("Time_to_Max"),
-                }
-                update_cols = [
-                    "source_athlete_id",
-                    "avg_force", "avg_force_norm", "max_force", "max_force_norm",
-                    "time_to_max", "age_at_collection", "age_group",
-                ]
-
-                verb = _upsert(conn, table, insert_data, update_cols,
-                               "athlete_uuid = %s AND session_date = %s",
-                               (athlete_uuid, date_str))
-                if verb == "inserted":
-                    summary["rows_inserted"] += 1
-                else:
-                    summary["rows_updated"] += 1
-
-                update_athlete_age_group(athlete_uuid, age_group)
-                _emit(log, "upsert", f"  {table}: {verb} {date_str}")
-                sessions_seen.add((athlete_uuid, date_str))
-
-            except Exception as e:
-                conn.rollback()
-                msg = f"{movement} ({os.path.basename(file_path)}): {e}"
-                _emit(log, "ERROR", msg)
-                summary["errors"].append(msg)
-
-        # ================================================================
-        # Part 2: CMJ/PPU trials — Athletic Screen style
-        # ================================================================
-
-        # Pre-estimate body weight from the first available CMJ Force file.
-        # PPU quiet standing ≠ full BW (upper body only on plate), so BW must
-        # come from a CMJ trial.  Used by analyze_phase_metrics_from_force.
-        athlete_body_weight_n: Optional[float] = None
-        for _t in cmj_ppu_trials:
-            if _t["movement_type"] == "CMJ":
-                _cf = os.path.join(power_dir, f"{_t['trial_name']}_Force.txt")
-                if os.path.isfile(_cf):
-                    try:
-                        _fa = load_power_txt(_cf)
-                        _qn = max(10, int(0.05 * fs_hz))
-                        athlete_body_weight_n = float(np.mean(_fa[:_qn]))
-                        _emit(log, "power",
-                              f"  BW estimated from {_t['trial_name']}_Force.txt: "
-                              f"{athlete_body_weight_n:.1f} N "
-                              f"({athlete_body_weight_n / 9.81:.1f} kg)")
-                    except Exception:
-                        pass
-                    break
-
-        for trial in cmj_ppu_trials:
-            movement   = trial["movement_type"]
-            trial_name = trial["trial_name"]
-            file_path  = trial["file_path"]
-            try:
-                if cancel_event and cancel_event.is_set():
-                    _emit(log, "cancelled", "Run cancelled by user.")
-                    break
-
-                file_date = all_file_dates.get(file_path)
-                if target_date is not None and file_date != target_date:
-                    _emit(log, "skip",
-                          f"{os.path.basename(file_path)}: date {file_date} does not match target {target_date}")
-                    continue
-
-                parsed = parse_txt_file(file_path, movement, folder_path=output_dir)
-                if not parsed:
-                    _emit(log, "parse", f"  {trial_name}: failed to parse {os.path.basename(file_path)}")
-                    summary["errors"].append(f"parse failed: {file_path}")
-                    continue
-
-                name     = parsed["name"]
-                date_str = parsed["date"]
-
-                athlete_uuid, date_str = _resolve_athlete(
-                    name, date_str, athlete_uuid_override, session_gender,
-                    athletes_meta, log, summary,
-                )
-                if athlete_uuid is None:
-                    continue
-
-                update_athlete_data_flag(athlete_uuid)
-
-                age_at_collection, age_group, date_str = _calc_age(athlete_uuid, date_str)
-
-                # Load and analyse the matching Power.txt file.
-                power_metrics: Dict = {}
-                phase_metrics: Dict = {}
-                force_metrics: Dict = {}
-                power_file = os.path.join(power_dir, f"{trial_name}_Power.txt")
-                if os.path.isfile(power_file):
-                    try:
-                        pw_arr = load_power_txt(power_file)
-                        jh_m = inches_to_meters(_safe(parsed.get("JH_IN")))
-                        pa = analyze_power_curve_advanced(
-                            pw_arr, fs_hz=fs_hz,
-                            jump_height_m=jh_m,
-                            movement_type=movement,
-                        )
-                        power_metrics = {k: _safe(pa.get(k)) for k in POWER_CURVE_COLS}
-                        phase_metrics = {k: _safe(pa.get(k)) for k in PHASE_COLS}
-                        _emit(log, "power", f"  {trial_name}: power curve analysed ({len(pw_arr)} samples)")
-                    except Exception as pe:
-                        _emit(log, "power", f"  {trial_name}: power analysis failed ({pe})")
-                else:
-                    _emit(log, "power", f"  {trial_name}: no Power.txt found — skipping curve")
-
-                # Force file: overrides phase_metrics with GRF-derived values.
-                # The Force.txt covers the full trial (quiet standing + eccentric + concentric)
-                # so eccentric columns can be computed.  Reuses load_power_txt — same format.
-                force_file = os.path.join(power_dir, f"{trial_name}_Force.txt")
-                if os.path.isfile(force_file):
-                    try:
-                        frc_arr = load_power_txt(force_file)
-                        jh_m_f = inches_to_meters(_safe(parsed.get("JH_IN")))
-                        fp = analyze_phase_metrics_from_force(
-                            frc_arr, fs_hz=fs_hz,
-                            jump_height_m=jh_m_f,
-                            movement_type=movement,
-                            body_weight_n=athlete_body_weight_n,
-                        )
-                        phase_metrics = {k: _safe(fp.get(k)) for k in PHASE_COLS}
-                        force_metrics = {k: _safe(fp.get(k)) for k in FORCE_COLS}
-                        _emit(log, "power", f"  {trial_name}: force phase metrics computed ({len(frc_arr)} samples)")
-                    except Exception as fe:
-                        _emit(log, "power", f"  {trial_name}: force phase analysis failed ({fe})")
-
-                table  = CMJ_PPU_TABLE[movement]
-                # When UUID override is active the file-path name may belong to a
-                # different person. Use the resolved athlete's display name instead.
-                resolved_name = athletes_meta.get(athlete_uuid, name)
-                src_id = extract_source_athlete_id(resolved_name)
-
-                insert_data = {
-                    "athlete_uuid":      athlete_uuid,
-                    "session_date":      date_str,
-                    "source_system":     "readiness_screen",
-                    "source_athlete_id": src_id,
-                    "trial_name":        trial_name,
-                    "trial_id":          _trial_id_from_name(trial_name),
-                    "age_at_collection": age_at_collection,
-                    "age_group":         age_group,
-                    "jump_height":       _safe(parsed.get("JH_IN")),
-                    "peak_power":        _safe(parsed.get("Peak_Power")),
-                    "peak_force":        None,
-                    "pp_w_per_kg":       _safe(parsed.get("PP_W_per_kg")),
-                    "pp_forceplate":     _safe(parsed.get("PP_FORCEPLATE")),
-                    "force_at_pp":       _safe(parsed.get("Force_at_PP")),
-                    "vel_at_pp":         _safe(parsed.get("Vel_at_PP")),
-                    **power_metrics,
-                    **phase_metrics,
-                    **force_metrics,
-                }
-                update_cols = [
-                    "source_athlete_id",
-                    "jump_height", "peak_power", "peak_force",
-                    "pp_w_per_kg", "pp_forceplate", "force_at_pp", "vel_at_pp",
-                    "age_at_collection", "age_group", "trial_id",
-                    *POWER_CURVE_COLS,
-                    *PHASE_COLS,
-                    *FORCE_COLS,
-                ]
-                # Only update columns that exist in insert_data.
-                update_cols = [c for c in update_cols if c in insert_data]
-
-                verb = _upsert(
-                    conn, table, insert_data, update_cols,
-                    # IS NOT DISTINCT FROM is NULL-safe: treats NULL = NULL as TRUE,
-                    # preventing duplicate INSERTs when trial_name is NULL (pre-migration rows).
-                    "athlete_uuid = %s AND session_date = %s AND trial_name IS NOT DISTINCT FROM %s",
-                    (athlete_uuid, date_str, trial_name),
-                )
-                if verb == "inserted":
-                    summary["rows_inserted"] += 1
-                else:
-                    summary["rows_updated"] += 1
-
-                update_athlete_age_group(athlete_uuid, age_group)
-                _emit(log, "upsert", f"  {table}: {verb} {date_str} (trial={trial_name})")
-                sessions_seen.add((athlete_uuid, date_str))
-
-                # Also write to f_readiness_screen_power_curve (scoring reads from it).
-                if power_metrics:
-                    trial_id = _trial_id_from_name(trial_name)
-                    try:
-                        pw_arr_full = load_power_txt(power_file)
-                        jh_m_full = inches_to_meters(_safe(parsed.get("JH_IN")))
-                        pa_full = analyze_power_curve_advanced(
-                            pw_arr_full, fs_hz=fs_hz,
-                            jump_height_m=jh_m_full,
-                            movement_type=movement,
-                        )
-                        pa_full["source_file"] = power_file
-                        pa_full["fs_hz"] = fs_hz
-                        _persist_power_curve(athlete_uuid, date_str, movement, trial_id, pa_full)
-                        summary["power_curve_rows"] += 1
-                    except Exception as pce:
-                        _emit(log, "power", f"  {trial_name}: power_curve table write failed ({pce})")
-
-            except Exception as e:
-                conn.rollback()
-                msg = f"{trial_name} ({os.path.basename(file_path)}): {e}"
-                _emit(log, "ERROR", msg)
-                summary["errors"].append(msg)
-
-        # ================================================================
-        # Part 3: Grip strength (manual entry via grip_payload)
-        # ================================================================
-        if grip_payload and sessions_seen:
-            try:
-                left_kg  = grip_payload.get("left_kg")
-                right_kg = grip_payload.get("right_kg")
-                if left_kg is not None and right_kg is not None:
-                    left_kg  = float(left_kg)
-                    right_kg = float(right_kg)
-                    avg_kg        = (left_kg + right_kg) / 2.0
-                    max_kg        = max(left_kg, right_kg)
-                    asymmetry_pct = 100.0 * abs(left_kg - right_kg) / max_kg if max_kg > 0 else None
-
-                    # Use first athlete-session we resolved (grip is one row per session).
-                    grip_uuid, grip_date = next(iter(sessions_seen))
-                    age_at_collection, age_group, grip_date = _calc_age(grip_uuid, grip_date)
-                    resolved_name = athletes_meta.get(grip_uuid, "")
-                    src_id = extract_source_athlete_id(resolved_name)
-
-                    grip_data = {
-                        "athlete_uuid":      grip_uuid,
-                        "session_date":      grip_date,
-                        "source_system":     "readiness_screen",
-                        "source_athlete_id": src_id,
-                        "age_at_collection": age_at_collection,
-                        "age_group":         age_group,
-                        "left_kg":           left_kg,
-                        "right_kg":          right_kg,
-                        "avg_kg":            avg_kg,
-                        "max_kg":            max_kg,
-                        "asymmetry_pct":     asymmetry_pct,
-                        "dominant_hand":     grip_payload.get("dominant_hand"),
-                        "entry_source":      "manual",
-                        "notes":             grip_payload.get("notes"),
-                    }
-                    grip_update_cols = [
-                        "left_kg", "right_kg", "avg_kg", "max_kg", "asymmetry_pct",
-                        "dominant_hand", "entry_source", "notes",
-                        "age_at_collection", "age_group",
-                    ]
-                    verb = _upsert(
-                        conn, "f_readiness_screen_grip", grip_data, grip_update_cols,
-                        "athlete_uuid = %s AND session_date = %s",
-                        (grip_uuid, grip_date),
-                    )
-                    if verb == "inserted":
-                        summary["rows_inserted"] += 1
-                    else:
-                        summary["rows_updated"] += 1
-                    _emit(log, "upsert", f"  f_readiness_screen_grip: {verb} {grip_date} "
-                          f"(L={left_kg:.1f} R={right_kg:.1f} asym={asymmetry_pct:.1f}%)")
-            except Exception as ge:
-                conn.rollback()
-                msg = f"grip upsert failed: {ge}"
-                _emit(log, "ERROR", msg)
-                summary["errors"].append(msg)
-
-    finally:
-        conn.close()
-
-    # ---- Composite score ---------------------------------------------------
-    for (athlete_uuid, date_str) in sessions_seen:
-        try:
-            d = datetime.strptime(date_str, "%Y-%m-%d").date()
-            score = score_session(athlete_uuid, d, is_hitter=is_hitter)
-            summary["scores"].append({
-                "athlete_uuid": athlete_uuid,
-                "name":         athletes_meta.get(athlete_uuid, ""),
-                "session_date": date_str,
-                **score,
-            })
-            _emit(log, "score",
-                  f"  {athletes_meta.get(athlete_uuid, athlete_uuid)} {date_str}: "
-                  f"{score.get('band')} ({score.get('composite_score')})")
-        except Exception as e:
-            msg = f"score {athlete_uuid} {date_str}: {e}"
-            _emit(log, "ERROR", msg)
-            summary["errors"].append(msg)
-
-    # Refresh all has_*_data boolean flags on d_athletes via warehouse stored procedure.
-    if sessions_seen and not (cancel_event and cancel_event.is_set()):
-        try:
-            call_update_athlete_data_flags()
-            _emit(log, "flags", "Athlete data flags refreshed")
-        except Exception as e:
-            _emit(log, "flags", f"Flag refresh skipped: {e}")
-
-    summary["athletes"] = [{"uuid": u, "name": n} for u, n in athletes_meta.items()]
-    _emit(
-        log, "done",
-        f"inserted={summary['rows_inserted']} updated={summary['rows_updated']} "
-        f"power_rows={summary['power_curve_rows']} scored={len(summary['scores'])}",
-    )
-    return summary
+def find_readiness_sessions(data_dir: str, athlete_name: Optional[str] = None,
+                            log: Callable = print) -> tuple:
+    """Return (session folders to ingest, data_root, target_date)."""
+    root = Path(data_dir)
+    if (root / "session.xml").exists():
+        return [root], root.parent, None
+    folders = []
+    for ath in sorted(p for p in root.iterdir() if p.is_dir() and not TEST_RE.match(p.name)):
+        if athlete_name:
+            nm = normalize_name_for_matching(ath.name.rpartition("_")[0] or ath.name)
+            if SequenceMatcher(None, nm, athlete_name).ratio() < 0.85:
+                continue
+        for ses in ath.iterdir():
+            if ses.is_dir() and DATE_RE.match(ses.name) and (ses / "session.xml").exists():
+                folders.append(ses)
+    # newest first; only parse session.xml until the target date is settled
+    folders.sort(key=lambda p: p.name[:10], reverse=True)
+    target, picked = None, []
+    for f in folders:
+        d = f.name[:10]
+        if target is not None and d < target:
+            break
+        if not _is_readiness(f):
+            continue
+        if target is None:
+            target = d                     # newest readiness date (today's, when there is one)
+        if d == target:
+            picked.append(f)
+    return picked, root, target
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Athlete + age
 # ---------------------------------------------------------------------------
 
-def _resolve_athlete(
-    name: str,
-    date_str: str,
-    athlete_uuid_override: Optional[str],
-    session_gender: str,
-    athletes_meta: Dict[str, str],
-    log: Callable,
-    summary: Dict,
-) -> tuple:
-    """Return (athlete_uuid, date_str) or (None, date_str) on failure."""
+def _folder_history(conn, ath_folder: str) -> List[str]:
+    """athlete_uuid(s) this QTM athlete folder is already linked to (readiness v2, then athletic screen v2)."""
+    with conn.cursor() as cur:
+        for sql in (
+            " UNION ".join(f"SELECT DISTINCT athlete_uuid FROM public.f_readiness_screen_v2_{t} "
+                           f"WHERE source_athlete_id = %s AND source_root <> 'legacy'" for t in ("cmj", "ppu", "iso")),
+            " UNION ".join(f"SELECT DISTINCT athlete_uuid FROM public.f_athletic_screen_v2_{t} "
+                           f"WHERE source_athlete_id = %s" for t in ("cmj", "dj", "ppu", "slv")),
+        ):
+            n = sql.count("%s")
+            try:
+                cur.execute(sql, (ath_folder,) * n)
+                u = [r[0] for r in cur.fetchall()]
+            except Exception:
+                conn.rollback()
+                u = []
+            if len(u) == 1:
+                return u
+    return []
+
+
+def _resolve_athlete(conn, srow: Dict, athlete_uuid_override: Optional[str],
+                     athletes_meta: Dict[str, str], log: Callable, summary: Dict) -> Optional[str]:
+    name = srow.get("xml_name") or srow["athlete_name"]
     if athlete_uuid_override:
-        athlete_uuid = athlete_uuid_override
+        uuid, how = athlete_uuid_override, "selected"
     else:
-        try:
-            athlete_uuid, _ = get_or_create_athlete(
-                name=name,
-                source_system="readiness_screen",
-                source_athlete_id=extract_source_athlete_id(name),
-                gender=session_gender,
-            )
-        except ValueError as ve:
-            _emit(log, "ERROR", f"  {name}: {ve}")
-            summary["errors"].append(str(ve))
-            return None, date_str
-
-    if athlete_uuid not in athletes_meta:
-        athletes_meta[athlete_uuid] = name
-        _emit(log, "athlete", f"  {name} -> {athlete_uuid} (matched)")
-
-    return athlete_uuid, date_str
+        hist = _folder_history(conn, srow["athlete_folder"])
+        if hist:
+            uuid, how = hist[0], "linked folder"
+        else:
+            try:
+                uuid, _ = get_or_create_athlete(name=name, source_system="readiness_screen",
+                                                source_athlete_id=extract_source_athlete_id(name))
+                how = "name match"
+            except ValueError as ve:
+                _emit(log, "ERROR", f"  {name}: {ve}")
+                summary["errors"].append(str(ve))
+                return None
+    if uuid not in athletes_meta:
+        athletes_meta[uuid] = name
+        _emit(log, "athlete", f"  {name} -> {uuid} ({how})")
+    return uuid
 
 
 def _calc_age(athlete_uuid: str, date_str: str):
@@ -618,143 +190,261 @@ def _calc_age(athlete_uuid: str, date_str: str):
     return age_at_collection, age_group, date_str
 
 
+# ---------------------------------------------------------------------------
+# Writes
+# ---------------------------------------------------------------------------
+
 def _upsert(conn, table: str, insert_data: Dict, update_cols: List[str],
             where_clause: str, where_params: tuple) -> str:
-    """INSERT or UPDATE a row. Returns 'inserted' or 'updated'."""
+    """INSERT or UPDATE one row (used for grip). Returns 'inserted' or 'updated'."""
     with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT 1 FROM public.{table} WHERE {where_clause} LIMIT 1",
-            where_params,
-        )
+        cur.execute(f"SELECT 1 FROM public.{table} WHERE {where_clause} LIMIT 1", where_params)
         exists = cur.fetchone() is not None
-
         if exists:
             set_clause = ", ".join(f"{c} = %s" for c in update_cols)
-            params = [insert_data[c] for c in update_cols] + list(where_params)
-            cur.execute(
-                f"UPDATE public.{table} SET {set_clause} WHERE {where_clause}",
-                params,
-            )
+            cur.execute(f"UPDATE public.{table} SET {set_clause} WHERE {where_clause}",
+                        [insert_data[c] for c in update_cols] + list(where_params))
             verb = "updated"
         else:
             cols = list(insert_data.keys())
-            placeholders = ", ".join(["%s"] * len(cols))
-            cur.execute(
-                f"INSERT INTO public.{table} ({', '.join(cols)}) VALUES ({placeholders})",
-                [insert_data[c] for c in cols],
-            )
+            cur.execute(f"INSERT INTO public.{table} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})",
+                        [insert_data[c] for c in cols])
             verb = "inserted"
-
     conn.commit()
     return verb
 
 
-def _trial_id_from_name(trial_name: str) -> int:
-    """Extract trailing integer from trial name, e.g. 'CMJ1' -> 1, 'PPU2' -> 2."""
-    m = re.search(r"(\d+)\s*$", trial_name)
-    return int(m.group(1)) if m else 1
+def _bulk_upsert(conn, table: str, rows: List[Dict], cols) -> int:
+    from psycopg2.extras import execute_values
+    if not rows:
+        return 0
+    names = [c for c, _ in cols]
+    key = schema.UNIQUE_KEY
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in names if c not in key)
+    extra = ", updated_at=now()" if "curve" not in table else ""
+    data = [tuple(_safe(r.get(c)) for c in names) for r in rows]
+    with conn.cursor() as cur:
+        execute_values(cur, f"INSERT INTO {table} ({', '.join(names)}) VALUES %s "
+                            f"ON CONFLICT ({', '.join(key)}) DO UPDATE SET {upd}{extra}", data, page_size=200)
+    return len(data)
 
 
-def _persist_power_curve(athlete_uuid: str, date_str: str, movement: str,
-                          trial_id: int, m: dict) -> None:
+def _curve_row(r: Dict, uuid: str) -> Optional[Dict]:
+    p = r.get("_curve")
+    if not p or not Path(p).exists():
+        return None
+    z = np.load(p)
+    ix = lambda k: int(z[k]) if k in z and int(z[k]) >= 0 else None
+    return dict(athlete_uuid=uuid, session_date=r["session_date"], session_folder=r["session_folder"],
+                movement=r["movement"], trial_name=r["trial_name"], fs_hz=float(z["fs_hz"]),
+                fz_n=[round(float(x), 2) for x in z["fz_n"]],
+                bw_n=float(z["bw_n"]) if np.isfinite(z["bw_n"]) else None,
+                plate_offset_n=float(z["plate_offset_n"]), first_frame=int(z["first_frame"]),
+                takeoff_idx=ix("takeoff_idx"), landing_idx=ix("landing_idx"),
+                contact_start_idx=ix("contact_start_idx"), concentric_start_idx=ix("concentric_start_idx"),
+                movement_onset_idx=ix("movement_onset_idx"), max_idx=ix("max_idx"),
+                processor_version=PROCESSOR_VERSION)
+
+
+def _write_session(conn, uuid: str, srow: Dict, rows: List[Dict], log: Callable,
+                   clear_date: bool = True) -> Dict[str, int]:
+    """Replace one session's v2 rows + curves. Returns trials written per table.
+    clear_date: drop everything this athlete has on that date first (first folder of the day), so a
+    re-ingest never leaves rows from an earlier load - including the backend's merged same-day folders."""
+    age, age_group, date_str = _calc_age(uuid, str(srow["session_date"]))
+    frames: Dict[str, List[Dict]] = {"cmj": [], "ppu": [], "iso": []}
+    for r in rows:
+        r = dict(r)
+        r.update(athlete_uuid=uuid, session_date=date_str, source_athlete_id=srow["athlete_folder"],
+                 source_system="readiness_screen_v2", age_at_collection=age, age_group=age_group,
+                 qc_flags=[x for x in str(r.get("qc_flags") or "").split(";") if x])
+        frames["iso" if r["movement"] in ISO else r["movement"].lower()].append(r)
+    counts = {}
+    scope = "" if clear_date else " AND session_folder = %s"
+    params = (uuid, date_str) if clear_date else (uuid, date_str, srow["session_folder"])
+    with conn.cursor() as cur:
+        for table in (schema.TABLE.format("cmj"), schema.TABLE.format("ppu"), schema.ISO_TABLE, schema.CURVE_TABLE):
+            cur.execute(f"DELETE FROM {table} WHERE athlete_uuid=%s AND session_date=%s{scope}", params)
+    for t, rs in frames.items():
+        if not rs:
+            continue
+        table = schema.ISO_TABLE if t == "iso" else schema.TABLE.format(t)
+        cols = schema.iso_columns() if t == "iso" else schema.jump_columns(t)
+        counts[t] = _bulk_upsert(conn, table, rs, cols)
+        curves = [c for c in (_curve_row(r, uuid) for r in rs) if c]
+        _bulk_upsert(conn, schema.CURVE_TABLE, curves, schema.CURVE_COLS)
+        flags = sorted({x for r in rs for x in r["qc_flags"]})
+        desc = ", ".join(f"{m} {n}" for m, n in pd.Series([r["movement"] for r in rs]).value_counts().items())
+        _emit(log, "upsert", f"  {table}: {desc} ({date_str})" + (f"  QC: {', '.join(flags)}" if flags else ""))
+    conn.commit()
+    update_athlete_age_group(uuid, age_group)
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# Main entry
+# ---------------------------------------------------------------------------
+
+def run_ingestion(
+    output_dir: str,
+    power_dir: Optional[str] = None,          # unused (Output Files era); kept for the route signature
+    fs_hz: float = 1000.0,                     # unused - the sample rate comes from each c3d
+    log: Callable[[str], None] = print,
+    athlete_uuid_override: Optional[str] = None,
+    cancel_event=None,
+    grip_payload: Optional[Dict] = None,
+    is_hitter: bool = False,
+) -> Dict:
+    """Ingest readiness session(s) from c3d. `output_dir` is the QTM Data root or one session folder.
+
+    grip_payload (optional): {left_kg, right_kg, dominant_hand, notes} - upserts f_readiness_screen_grip.
+    is_hitter (optional): skip the isometrics (I/Y/T/IR90) and score without iso_z.
+    """
+    summary: Dict = {"output_dir": output_dir, "files_found": {}, "rows_inserted": 0, "rows_updated": 0,
+                     "athletes": [], "power_curve_rows": 0, "scores": [], "errors": []}
+    data_dir = output_dir
+    if not os.path.isdir(data_dir):
+        msg = f"Folder not found: {data_dir}"
+        _emit(log, "ERROR", msg)
+        summary["errors"].append(msg)
+        return summary
+    if "output files" in data_dir.lower():
+        msg = (f"'{data_dir}' is a Visual3D Output Files folder - that step is retired. "
+               f"Point the Tracker at the QTM Data folder (D:/Athletic Screen 2.0/Data) or a session folder.")
+        _emit(log, "ERROR", msg)
+        summary["errors"].append(msg)
+        return summary
+
+    sel_name = None
+    if athlete_uuid_override:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM analytics.d_athletes WHERE athlete_uuid = %s", (athlete_uuid_override,))
+                r = cur.fetchone()
+                sel_name = normalize_name_for_matching(r[0]) if r else None
+        finally:
+            conn.close()
+
+    _emit(log, "scan", f"Scanning {data_dir} for Readiness Screen sessions (processor {PROCESSOR_VERSION})")
+    folders, data_root, target = find_readiness_sessions(data_dir, sel_name, log)
+    if not folders:
+        _emit(log, "scan", "No readiness sessions found. Nothing to do.")
+        return summary
+    if target:
+        _emit(log, "filter", f"{'Today' if target == date.today().strftime('%Y-%m-%d') else 'Most recent date'}: "
+                             f"{target} - {len(folders)} session(s)")
+
+    work = Path(tempfile.mkdtemp(prefix="rs_tracker_"))
+    (work / "curves").mkdir()
+    sessions_seen: set = set()
+    athletes_meta: Dict[str, str] = {}
+    cleared: set = set()
     conn = get_connection()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.f_readiness_screen_power_curve (
-                    athlete_uuid, session_date, movement_type, trial_id, source_file, fs_hz,
-                    n_samples, peak_power_w, time_to_peak_s, rise_time_10_90_s,
-                    rise_slope_w_per_s, fwhm_s, auc_j, t_com_s, t_com_norm_0to1, cv_local_peak,
-                    rpd_max_w_per_s, time_to_rpd_max_s, auc_pre_j, auc_post_j, work_early_pct,
-                    decay_90_10_s, skewness, kurtosis, spectral_centroid_hz,
-                    contraction_time_s, eccentric_duration_s, concentric_duration_s,
-                    ecc_con_duration_ratio, eccentric_mean_power_w, eccentric_peak_power_w,
-                    eccentric_auc_j, concentric_auc_j, mrsi
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s
-                )
-                ON CONFLICT (athlete_uuid, session_date, movement_type, trial_id) DO UPDATE SET
-                    source_file             = EXCLUDED.source_file,
-                    fs_hz                   = EXCLUDED.fs_hz,
-                    n_samples               = EXCLUDED.n_samples,
-                    peak_power_w            = EXCLUDED.peak_power_w,
-                    time_to_peak_s          = EXCLUDED.time_to_peak_s,
-                    rise_time_10_90_s       = EXCLUDED.rise_time_10_90_s,
-                    rise_slope_w_per_s      = EXCLUDED.rise_slope_w_per_s,
-                    fwhm_s                  = EXCLUDED.fwhm_s,
-                    auc_j                   = EXCLUDED.auc_j,
-                    t_com_s                 = EXCLUDED.t_com_s,
-                    t_com_norm_0to1         = EXCLUDED.t_com_norm_0to1,
-                    cv_local_peak           = EXCLUDED.cv_local_peak,
-                    rpd_max_w_per_s         = EXCLUDED.rpd_max_w_per_s,
-                    time_to_rpd_max_s       = EXCLUDED.time_to_rpd_max_s,
-                    auc_pre_j               = EXCLUDED.auc_pre_j,
-                    auc_post_j              = EXCLUDED.auc_post_j,
-                    work_early_pct          = EXCLUDED.work_early_pct,
-                    decay_90_10_s           = EXCLUDED.decay_90_10_s,
-                    skewness                = EXCLUDED.skewness,
-                    kurtosis                = EXCLUDED.kurtosis,
-                    spectral_centroid_hz    = EXCLUDED.spectral_centroid_hz,
-                    contraction_time_s      = EXCLUDED.contraction_time_s,
-                    eccentric_duration_s    = EXCLUDED.eccentric_duration_s,
-                    concentric_duration_s   = EXCLUDED.concentric_duration_s,
-                    ecc_con_duration_ratio  = EXCLUDED.ecc_con_duration_ratio,
-                    eccentric_mean_power_w  = EXCLUDED.eccentric_mean_power_w,
-                    eccentric_peak_power_w  = EXCLUDED.eccentric_peak_power_w,
-                    eccentric_auc_j         = EXCLUDED.eccentric_auc_j,
-                    concentric_auc_j        = EXCLUDED.concentric_auc_j,
-                    mrsi                    = EXCLUDED.mrsi
-                """,
-                (
-                    athlete_uuid, date_str, movement, trial_id,
-                    m.get("source_file"), m.get("fs_hz"),
-                    _safe(m.get("n_samples")), _safe(m.get("peak_power_w")),
-                    _safe(m.get("time_to_peak_s")), _safe(m.get("rise_time_10_90_s")),
-                    _safe(m.get("rise_slope_w_per_s")), _safe(m.get("fwhm_s")),
-                    _safe(m.get("auc_j")), _safe(m.get("t_com_s")),
-                    _safe(m.get("t_com_norm_0to1")), _safe(m.get("cv_local_peak")),
-                    _safe(m.get("rpd_max_w_per_s")), _safe(m.get("time_to_rpd_max_s")),
-                    _safe(m.get("auc_pre_j")), _safe(m.get("auc_post_j")),
-                    _safe(m.get("work_early_pct")), _safe(m.get("decay_90_10_s")),
-                    _safe(m.get("skewness")), _safe(m.get("kurtosis")),
-                    _safe(m.get("spectral_centroid_hz")),
-                    _safe(m.get("contraction_time_s")), _safe(m.get("eccentric_duration_s")),
-                    _safe(m.get("concentric_duration_s")), _safe(m.get("ecc_con_duration_ratio")),
-                    _safe(m.get("eccentric_mean_power_w")), _safe(m.get("eccentric_peak_power_w")),
-                    _safe(m.get("eccentric_auc_j")), _safe(m.get("concentric_auc_j")),
-                    _safe(m.get("mrsi")),
-                ),
-            )
-        conn.commit()
+        for f in folders:
+            if cancel_event and cancel_event.is_set():
+                _emit(log, "cancelled", "Run cancelled by user.")
+                break
+            try:
+                srow, rows, errs = process_session(f, data_root, work)
+                for e in errs:
+                    summary["errors"].append(f"{e['trial_name']}: {e['error']}")
+                    _emit(log, "c3d", f"  {e['trial_name']}: {e['error']}")
+                if not str(srow.get("status", "")).startswith("ok"):
+                    _emit(log, "skip", f"  {f.name}: {srow.get('status')}")
+                    continue
+                for r in rows:
+                    r["_curve"] = work / "curves" / f"{srow['source_root']}__{f.parent.name}__{f.name}__{r['trial_name']}.npz"
+                if is_hitter:
+                    _emit(log, "hitter", "Hitter mode - skipping isometrics (I/Y/T/IR90)")
+                    rows = [r for r in rows if r["movement"] not in ISO]
+                summary["files_found"].update({f"{f.parent.name}/{f.name}/{r['trial_name']}": r["source_c3d"] for r in rows})
+                _emit(log, "c3d", f"  {f.parent.name}/{f.name}: {srow['status']}")
+
+                uuid = _resolve_athlete(conn, srow, athlete_uuid_override, athletes_meta, log, summary)
+                if uuid is None:
+                    continue
+                day = (uuid, _calc_age(uuid, str(srow["session_date"]))[2])
+                counts = _write_session(conn, uuid, srow, rows, log, clear_date=day not in cleared)
+                cleared.add(day)
+                n = sum(counts.values())
+                summary["rows_inserted"] += n
+                summary["power_curve_rows"] += counts.get("cmj", 0) + counts.get("ppu", 0)
+                update_athlete_data_flag(uuid)
+                sessions_seen.add(day)
+            except Exception as e:
+                conn.rollback()
+                msg = f"{f.parent.name}/{f.name}: {type(e).__name__}: {e}"
+                _emit(log, "ERROR", msg)
+                summary["errors"].append(msg)
+
+        # ---- Grip strength (manual entry) ----------------------------------
+        if grip_payload and sessions_seen:
+            try:
+                left_kg, right_kg = grip_payload.get("left_kg"), grip_payload.get("right_kg")
+                if left_kg is not None and right_kg is not None:
+                    left_kg, right_kg = float(left_kg), float(right_kg)
+                    max_kg = max(left_kg, right_kg)
+                    asymmetry_pct = 100.0 * abs(left_kg - right_kg) / max_kg if max_kg > 0 else None
+                    grip_uuid, grip_date = next(iter(sessions_seen))
+                    age_at_collection, age_group, grip_date = _calc_age(grip_uuid, grip_date)
+                    grip_data = {
+                        "athlete_uuid": grip_uuid, "session_date": grip_date, "source_system": "readiness_screen",
+                        "source_athlete_id": extract_source_athlete_id(athletes_meta.get(grip_uuid, "")),
+                        "age_at_collection": age_at_collection, "age_group": age_group,
+                        "left_kg": left_kg, "right_kg": right_kg, "avg_kg": (left_kg + right_kg) / 2.0,
+                        "max_kg": max_kg, "asymmetry_pct": asymmetry_pct,
+                        "dominant_hand": grip_payload.get("dominant_hand"), "entry_source": "manual",
+                        "notes": grip_payload.get("notes"),
+                    }
+                    verb = _upsert(conn, "f_readiness_screen_grip", grip_data,
+                                   ["left_kg", "right_kg", "avg_kg", "max_kg", "asymmetry_pct", "dominant_hand",
+                                    "entry_source", "notes", "age_at_collection", "age_group"],
+                                   "athlete_uuid = %s AND session_date = %s", (grip_uuid, grip_date))
+                    summary["rows_inserted" if verb == "inserted" else "rows_updated"] += 1
+                    _emit(log, "upsert", f"  f_readiness_screen_grip: {verb} {grip_date} "
+                                         f"(L={left_kg:.1f} R={right_kg:.1f} asym={asymmetry_pct:.1f}%)")
+            except Exception as ge:
+                conn.rollback()
+                summary["errors"].append(f"grip upsert failed: {ge}")
+                _emit(log, "ERROR", f"grip upsert failed: {ge}")
     finally:
         conn.close()
 
+    # ---- Composite score ----------------------------------------------------
+    for athlete_uuid, date_str in sorted(sessions_seen, key=lambda x: x[1]):
+        try:
+            score = score_session(athlete_uuid, datetime.strptime(date_str, "%Y-%m-%d").date(), is_hitter=is_hitter)
+            summary["scores"].append({"athlete_uuid": athlete_uuid, "name": athletes_meta.get(athlete_uuid, ""),
+                                      "session_date": date_str, **score})
+            _emit(log, "score", f"  {athletes_meta.get(athlete_uuid, athlete_uuid)} {date_str}: "
+                                f"{score.get('band')} ({score.get('composite_score')})")
+        except Exception as e:
+            summary["errors"].append(f"score {athlete_uuid} {date_str}: {e}")
+            _emit(log, "ERROR", f"score {athlete_uuid} {date_str}: {e}")
 
-# CLI entry
+    if sessions_seen and not (cancel_event and cancel_event.is_set()):
+        try:
+            call_update_athlete_data_flags()
+            _emit(log, "flags", "Athlete data flags refreshed")
+        except Exception as e:
+            _emit(log, "flags", f"Flag refresh skipped: {e}")
+
+    summary["athletes"] = [{"uuid": u, "name": n} for u, n in athletes_meta.items()]
+    _emit(log, "done", f"trials written={summary['rows_inserted']} sessions={len(sessions_seen)} "
+                       f"scored={len(summary['scores'])}")
+    return summary
+
+
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run readiness ingestion against an Output Files folder.")
-    parser.add_argument("output_dir")
-    parser.add_argument("--power-dir", default=None)
-    parser.add_argument("--fs-hz", type=float, default=1000.0)
+    parser = argparse.ArgumentParser(description="Ingest readiness session(s) from c3d.")
+    parser.add_argument("data_dir", help="QTM Data root (D:/Athletic Screen 2.0/Data) or one session folder")
     parser.add_argument("--athlete-uuid", default=None)
+    parser.add_argument("--hitter", action="store_true")
     args = parser.parse_args()
-
-    summary = run_ingestion(
-        args.output_dir,
-        power_dir=args.power_dir,
-        fs_hz=args.fs_hz,
-        athlete_uuid_override=args.athlete_uuid,
-    )
-    print()
-    print("SUMMARY:", summary)
-    sys.exit(0 if not summary["errors"] else 1)
+    s = run_ingestion(args.data_dir, athlete_uuid_override=args.athlete_uuid, is_hitter=args.hitter)
+    print("\nSUMMARY:", {k: v for k, v in s.items() if k != "files_found"})
+    sys.exit(0 if not s["errors"] else 1)

@@ -62,50 +62,50 @@ BAND_FATIGUED = 40
 # (table, column, sign) — sign +1 means higher_is_better, -1 means lower_is_better.
 # Sign is applied AFTER computing z; +1 → z stays, -1 → z is negated.
 CMJ_METRICS: List[Tuple[str, str, int]] = [
-    ("f_readiness_screen_cmj", "jump_height",          +1),
-    ("f_readiness_screen_cmj", "pp_w_per_kg",          +1),
-    ("f_readiness_screen_cmj", "force_at_pp",          +1),
-    ("f_readiness_screen_cmj", "vel_at_pp",            +1),
+    ("v_readiness_screen_cmj", "jump_height",          +1),
+    ("v_readiness_screen_cmj", "pp_w_per_kg",          +1),
+    ("v_readiness_screen_cmj", "force_at_pp",          +1),
+    ("v_readiness_screen_cmj", "vel_at_pp",            +1),
     # v2 phase metrics
-    ("f_readiness_screen_cmj", "mrsi",                 +1),
-    ("f_readiness_screen_cmj", "contraction_time_s",   -1),  # longer = fatigued
-    ("f_readiness_screen_cmj", "ecc_con_duration_ratio", -1),  # rises with fatigue
+    ("v_readiness_screen_cmj", "mrsi",                 +1),
+    ("v_readiness_screen_cmj", "contraction_time_s",   -1),  # longer = fatigued
+    ("v_readiness_screen_cmj", "ecc_con_duration_ratio", -1),  # rises with fatigue
     # eccentric_mean_power_w is negative; more negative (faster braking) = better → sign -1
-    ("f_readiness_screen_cmj", "eccentric_mean_power_w", -1),
+    ("v_readiness_screen_cmj", "eccentric_mean_power_w", -1),
     # v2.1 force-derived metrics
-    ("f_readiness_screen_cmj", "peak_grf_bw_ratio",    +1),  # normalized peak force
-    ("f_readiness_screen_cmj", "rfd_0_100ms",          +1),  # rate of force development
-    ("f_readiness_screen_cmj", "concentric_impulse_ns", +1), # mechanical output
+    ("v_readiness_screen_cmj", "peak_grf_bw_ratio",    +1),  # normalized peak force
+    ("v_readiness_screen_cmj", "rfd_0_100ms",          +1),  # rate of force development
+    ("v_readiness_screen_cmj", "concentric_impulse_ns", +1), # mechanical output
 ]
 PPU_METRICS: List[Tuple[str, str, int]] = [
-    ("f_readiness_screen_ppu", "jump_height",          +1),
-    ("f_readiness_screen_ppu", "pp_w_per_kg",          +1),
-    ("f_readiness_screen_ppu", "force_at_pp",          +1),
-    ("f_readiness_screen_ppu", "vel_at_pp",            +1),
+    ("v_readiness_screen_ppu", "jump_height",          +1),
+    ("v_readiness_screen_ppu", "pp_w_per_kg",          +1),
+    ("v_readiness_screen_ppu", "force_at_pp",          +1),
+    ("v_readiness_screen_ppu", "vel_at_pp",            +1),
     # v2 phase metrics — eccentric metrics omitted (still-start protocol, always NULL)
-    ("f_readiness_screen_ppu", "mrsi",                 +1),
-    ("f_readiness_screen_ppu", "contraction_time_s",   -1),
+    ("v_readiness_screen_ppu", "mrsi",                 +1),
+    ("v_readiness_screen_ppu", "contraction_time_s",   -1),
     # v2.1 force-derived metrics
-    ("f_readiness_screen_ppu", "peak_grf_bw_ratio",      +1),
-    ("f_readiness_screen_ppu", "rfd_0_100ms",            +1),
-    ("f_readiness_screen_ppu", "concentric_impulse_ns",  +1),
+    ("v_readiness_screen_ppu", "peak_grf_bw_ratio",      +1),
+    ("v_readiness_screen_ppu", "rfd_0_100ms",            +1),
+    ("v_readiness_screen_ppu", "concentric_impulse_ns",  +1),
     # eccentric phase metrics — PPU loads before exploding (plyometric push-up)
-    ("f_readiness_screen_ppu", "ecc_con_duration_ratio", -1),
-    ("f_readiness_screen_ppu", "eccentric_mean_power_w", -1),
+    ("v_readiness_screen_ppu", "ecc_con_duration_ratio", -1),
+    ("v_readiness_screen_ppu", "eccentric_mean_power_w", -1),
 ]
 
 # Athletic screen supplemental sources (read-only).
 # Maps (readiness_table, col) → (athletic_table, athletic_col) where the column
 # exists under a different name or the same name in the athletic screen table.
 _ATHLETIC_COMPANION: Dict[Tuple[str, str], Tuple[str, str]] = {
-    ("f_readiness_screen_cmj", "jump_height"): ("f_athletic_screen_cmj", "jh_in"),
-    ("f_readiness_screen_cmj", "pp_w_per_kg"): ("f_athletic_screen_cmj", "pp_w_per_kg"),
-    ("f_readiness_screen_cmj", "force_at_pp"): ("f_athletic_screen_cmj", "force_at_pp"),
-    ("f_readiness_screen_cmj", "vel_at_pp"):   ("f_athletic_screen_cmj", "vel_at_pp"),
-    ("f_readiness_screen_ppu", "jump_height"): ("f_athletic_screen_ppu", "jh_in"),
-    ("f_readiness_screen_ppu", "pp_w_per_kg"): ("f_athletic_screen_ppu", "pp_w_per_kg"),
-    ("f_readiness_screen_ppu", "force_at_pp"): ("f_athletic_screen_ppu", "force_at_pp"),
-    ("f_readiness_screen_ppu", "vel_at_pp"):   ("f_athletic_screen_ppu", "vel_at_pp"),
+    ("v_readiness_screen_cmj", "jump_height"): ("v_athletic_screen_cmj", "jh_in"),
+    ("v_readiness_screen_cmj", "pp_w_per_kg"): ("v_athletic_screen_cmj", "pp_w_per_kg"),
+    ("v_readiness_screen_cmj", "force_at_pp"): ("v_athletic_screen_cmj", "force_at_pp"),
+    ("v_readiness_screen_cmj", "vel_at_pp"):   ("v_athletic_screen_cmj", "vel_at_pp"),
+    ("v_readiness_screen_ppu", "jump_height"): ("v_athletic_screen_ppu", "jh_in"),
+    ("v_readiness_screen_ppu", "pp_w_per_kg"): ("v_athletic_screen_ppu", "pp_w_per_kg"),
+    ("v_readiness_screen_ppu", "force_at_pp"): ("v_athletic_screen_ppu", "force_at_pp"),
+    ("v_readiness_screen_ppu", "vel_at_pp"):   ("v_athletic_screen_ppu", "vel_at_pp"),
 }
 
 # Power-curve columns stored inline in both athletic screen CMJ and PPU tables.
@@ -115,12 +115,12 @@ _ATHLETIC_POWER_COLS: frozenset = frozenset({
     "skewness", "kurtosis", "spectral_centroid_hz",
 })
 # I and T removed in v2 (lower throwing-specific signal). Historical rows in
-# f_readiness_screen_i and f_readiness_screen_t remain queryable but are not scored.
+# v_readiness_screen_i and v_readiness_screen_t remain queryable but are not scored.
 ISO_METRICS: List[Tuple[str, str, int]] = [
-    ("f_readiness_screen_y",    "max_force",    +1),
-    ("f_readiness_screen_ir90", "max_force",    +1),
-    ("f_readiness_screen_y",    "time_to_max",  -1),
-    ("f_readiness_screen_ir90", "time_to_max",  -1),
+    ("v_readiness_screen_y",    "max_force",    +1),
+    ("v_readiness_screen_ir90", "max_force",    +1),
+    ("v_readiness_screen_y",    "time_to_max",  -1),
+    ("v_readiness_screen_ir90", "time_to_max",  -1),
 ]
 
 GRIP_METRICS: List[Tuple[str, str, int]] = [
@@ -130,17 +130,19 @@ GRIP_METRICS: List[Tuple[str, str, int]] = [
     ("f_readiness_screen_grip", "asymmetry_pct", -1),  # higher asymmetry = worse
 ]
 POWER_CURVE_METRICS: List[Tuple[str, str, int]] = [
-    ("f_readiness_screen_power_curve", "peak_power_w",       +1),
-    ("f_readiness_screen_power_curve", "rpd_max_w_per_s",    +1),
-    ("f_readiness_screen_power_curve", "rise_slope_w_per_s", +1),
-    ("f_readiness_screen_power_curve", "auc_j",              +1),
-    ("f_readiness_screen_power_curve", "rise_time_10_90_s",  -1),  # shorter = better
+    ("v_readiness_screen_power_curve", "peak_power_w",       +1),
+    ("v_readiness_screen_power_curve", "rpd_max_w_per_s",    +1),
+    ("v_readiness_screen_power_curve", "rise_slope_w_per_s", +1),
+    ("v_readiness_screen_power_curve", "auc_j",              +1),
+    ("v_readiness_screen_power_curve", "rise_time_10_90_s",  -1),  # shorter = better
 ]
 
 
 def _label(table: str, col: str) -> str:
-    """Pretty key for the flags JSON, e.g. 'f_readiness_screen_cmj.jump_height' -> 'cmj.jump_height'."""
-    short = table.replace("f_readiness_screen_", "").replace("_power_curve", "power")
+    """Pretty key for the flags JSON, e.g. 'v_readiness_screen_cmj.jump_height' -> 'cmj.jump_height'."""
+    # v_readiness_screen_* = Readiness Screen v2 views (rebuilt from c3d); grip stays f_readiness_screen_grip
+    short = (table.replace("v_readiness_screen_", "").replace("f_readiness_screen_", "")
+             .replace("_power_curve", "power"))
     return f"{short}.{col}"
 
 
@@ -154,14 +156,14 @@ def _fetch_today_and_baseline(
 ) -> Tuple[Optional[float], List[float]]:
     """Return (today_value, baseline_values). Today = exact session_date, baseline = strictly prior, within window.
 
-    For CMJ/PPU metrics, UNIONs f_athletic_screen_cmj/ppu as supplemental sources so that
+    For CMJ/PPU metrics, UNIONs v_athletic_screen_cmj/ppu as supplemental sources so that
     athletic screen sessions contribute to the baseline even when no readiness screen CMJ/PPU
     data was collected that day.
     For power-curve metrics, also UNIONs the inline power columns from both athletic screen tables.
     """
     cutoff = session_date - timedelta(days=baseline_days)
     companion = _ATHLETIC_COMPANION.get((table, col))
-    is_power_col = (table == "f_readiness_screen_power_curve" and col in _ATHLETIC_POWER_COLS)
+    is_power_col = (table == "v_readiness_screen_power_curve" and col in _ATHLETIC_POWER_COLS)
 
     if companion:
         ath_table, ath_col = companion
@@ -198,13 +200,13 @@ def _fetch_today_and_baseline(
         cur.execute(
             f"""
             SELECT AVG(v)::float FROM (
-              SELECT {col} AS v FROM public.f_readiness_screen_power_curve
+              SELECT {col} AS v FROM public.v_readiness_screen_power_curve
                WHERE athlete_uuid = %s AND session_date = %s
               UNION ALL
-              SELECT {col} AS v FROM public.f_athletic_screen_cmj
+              SELECT {col} AS v FROM public.v_athletic_screen_cmj
                WHERE athlete_uuid = %s AND session_date = %s
               UNION ALL
-              SELECT {col} AS v FROM public.f_athletic_screen_ppu
+              SELECT {col} AS v FROM public.v_athletic_screen_ppu
                WHERE athlete_uuid = %s AND session_date = %s
             ) _u
             """,
@@ -218,13 +220,13 @@ def _fetch_today_and_baseline(
         cur.execute(
             f"""
             SELECT session_date, AVG(v)::float FROM (
-              SELECT session_date, {col} AS v FROM public.f_readiness_screen_power_curve
+              SELECT session_date, {col} AS v FROM public.v_readiness_screen_power_curve
                WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
               UNION ALL
-              SELECT session_date, {col} AS v FROM public.f_athletic_screen_cmj
+              SELECT session_date, {col} AS v FROM public.v_athletic_screen_cmj
                WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
               UNION ALL
-              SELECT session_date, {col} AS v FROM public.f_athletic_screen_ppu
+              SELECT session_date, {col} AS v FROM public.v_athletic_screen_ppu
                WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             ) _u
             GROUP BY session_date
@@ -297,28 +299,28 @@ def _count_prior_sessions(
     cur.execute(
         """
         SELECT COUNT(DISTINCT session_date) FROM (
-            SELECT session_date FROM public.f_readiness_screen_cmj
+            SELECT session_date FROM public.v_readiness_screen_cmj
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             UNION
-            SELECT session_date FROM public.f_readiness_screen_ppu
+            SELECT session_date FROM public.v_readiness_screen_ppu
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             UNION
-            SELECT session_date FROM public.f_readiness_screen_y
+            SELECT session_date FROM public.v_readiness_screen_y
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             UNION
-            SELECT session_date FROM public.f_readiness_screen_ir90
+            SELECT session_date FROM public.v_readiness_screen_ir90
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             UNION
             SELECT session_date FROM public.f_readiness_screen_grip
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             UNION
-            SELECT session_date FROM public.f_readiness_screen_power_curve
+            SELECT session_date FROM public.v_readiness_screen_power_curve
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             UNION
-            SELECT session_date FROM public.f_athletic_screen_cmj
+            SELECT session_date FROM public.v_athletic_screen_cmj
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
             UNION
-            SELECT session_date FROM public.f_athletic_screen_ppu
+            SELECT session_date FROM public.v_athletic_screen_ppu
              WHERE athlete_uuid = %s AND session_date < %s AND session_date >= %s
         ) _all_sessions
         """,
@@ -350,7 +352,7 @@ def _fetch_cohort_stats(
     Returns None if fewer than 2 data points or sd == 0.
     """
     companion = _ATHLETIC_COMPANION.get((table, col))
-    is_power_col = (table == "f_readiness_screen_power_curve" and col in _ATHLETIC_POWER_COLS)
+    is_power_col = (table == "v_readiness_screen_power_curve" and col in _ATHLETIC_POWER_COLS)
 
     if companion:
         ath_table, ath_col = companion
@@ -381,15 +383,15 @@ def _fetch_cohort_stats(
                 SELECT athlete_uuid, session_date, AVG(v)::float AS session_avg
                   FROM (
                     SELECT athlete_uuid, session_date, {col} AS v
-                      FROM public.f_readiness_screen_power_curve
+                      FROM public.v_readiness_screen_power_curve
                      WHERE athlete_uuid <> %s AND {col} IS NOT NULL
                     UNION ALL
                     SELECT athlete_uuid, session_date, {col} AS v
-                      FROM public.f_athletic_screen_cmj
+                      FROM public.v_athletic_screen_cmj
                      WHERE athlete_uuid <> %s AND {col} IS NOT NULL
                     UNION ALL
                     SELECT athlete_uuid, session_date, {col} AS v
-                      FROM public.f_athletic_screen_ppu
+                      FROM public.v_athletic_screen_ppu
                      WHERE athlete_uuid <> %s AND {col} IS NOT NULL
                   ) _combined
                  GROUP BY athlete_uuid, session_date
@@ -698,12 +700,12 @@ def compute_intra_session_cv(
     Returns {label: {today_cv, baseline_mean_cv, flag, n_trials}}.
     """
     cv_metrics = [
-        ("f_readiness_screen_cmj", "jump_height"),
-        ("f_readiness_screen_cmj", "mrsi"),
-        ("f_readiness_screen_cmj", "peak_power_w"),
-        ("f_readiness_screen_ppu", "jump_height"),
-        ("f_readiness_screen_ppu", "mrsi"),
-        ("f_readiness_screen_ppu", "peak_power_w"),
+        ("v_readiness_screen_cmj", "jump_height"),
+        ("v_readiness_screen_cmj", "mrsi"),
+        ("v_readiness_screen_cmj", "peak_power_w"),
+        ("v_readiness_screen_ppu", "jump_height"),
+        ("v_readiness_screen_ppu", "mrsi"),
+        ("v_readiness_screen_ppu", "peak_power_w"),
     ]
     cutoff = session_date - timedelta(days=baseline_days)
     result: Dict = {}

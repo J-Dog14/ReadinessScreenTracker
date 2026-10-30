@@ -1,5 +1,16 @@
 # Readiness Screen Tracker
 
+> **Readiness Screen v2 (2026-10-28):** intake reads the c3d files directly; the Visual3D Output Files step is
+> retired (its CMJ/PPU power was wrong - velocity was integrated forward from frame 1). Point the app at the QTM
+> Data folder (`D:/Athletic Screen 2.0/Data`) or one session folder. It ingests today's Readiness Screen
+> sessions (else the most recent), using `ingestion/c3d/` - the same processor as OctaneBiomechBackend
+> `uais/python/readinessScreen/v2` (keep them in sync) - and writes `f_readiness_screen_v2_{cmj,ppu,iso}` +
+> `f_readiness_screen_v2_force_curve`. Scoring and the dashboard read the `v_readiness_screen_*` views (old column
+> names) and the `v_athletic_screen_*` views. The old `f_readiness_screen_*` / `_power_curve` tables are frozen.
+> Set `READINESS_SCREEN_DATA_DIR` in `.env`; `pip install -r requirements.txt` adds `ezc3d`.
+> The sections below describe the original Output Files design.
+
+
 A standalone Flask app for ingesting, scoring, and visualizing daily athlete readiness data from the Octane biomech readiness screen battery (CMJ, PPU, and isometric I/Y/T/IR90 tests).
 
 This app is **separate** from the main Octane biomech backend — it does not modify it — but reads from the same shared output folder (default `D:\Readiness Screen 3\Output Files`) and writes to the same Neon Postgres warehouse.

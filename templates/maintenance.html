@@ -7,11 +7,11 @@
 {% block content %}
 <h1>Readiness Screen — Maintenance</h1>
 <p class="text-muted" style="margin-top:0;">
-  Point at an Output Files folder. The app parses <strong>Y, IR90, CMJ, and PPU</strong>
-  movement files, resolves athletes against <code>analytics.d_athletes</code>, upserts into
-  the existing <code>f_readiness_screen_*</code> tables, runs power-curve and phase-metric
-  analysis on any matching <code>*_Power.txt</code> files, and computes the composite
-  readiness score.
+  Point at the QTM Data folder (<code>D:/Athletic Screen 2.0/Data</code>) or one session folder.
+  The app finds today's Readiness Screen sessions (else the most recent), reads <strong>CMJ, PPU,
+  Y and IR90</strong> straight from the c3d files (Readiness Screen v2 - no Visual3D export),
+  resolves athletes against <code>analytics.d_athletes</code>, writes
+  <code>f_readiness_screen_v2_*</code>, and computes the composite readiness score.
 </p>
 
 <!-- ─── Athlete picker ──────────────────────────────────────────────────── -->
@@ -79,7 +79,7 @@
     </div>
   </div>
 
-  <div class="row" style="margin-top:0.75rem;">
+  <div class="row" style="margin-top:0.75rem; display:none;"><!-- Output Files era: power comes from the c3d now -->
     <div class="col" style="max-width: 380px;">
       <label class="field-label">Power.txt folder (CMJ/PPU curves)</label>
       <input id="power-dir" class="input mono" type="text" value="{{ default_power_dir }}">
@@ -103,13 +103,13 @@
     <!-- CMJ and PPU tiles — discovered dynamically; JS adds them after scan -->
     <div class="file-tile missing" data-movement="CMJ" data-dynamic="1">
       <span class="label">CMJ</span>
-      <span class="name">CMJ*.txt</span>
+      <span class="name">CMJ *.c3d</span>
       <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
       <span class="athlete-name text-muted" style="font-size: 0.75rem; display:block;"></span>
     </div>
     <div class="file-tile missing" data-movement="PPU" data-dynamic="1">
       <span class="label">PPU</span>
-      <span class="name">PPU*.txt</span>
+      <span class="name">PPU *.c3d</span>
       <span class="status text-muted" style="font-size: 0.75rem;">not scanned</span>
       <span class="athlete-name text-muted" style="font-size: 0.75rem; display:block;"></span>
     </div>

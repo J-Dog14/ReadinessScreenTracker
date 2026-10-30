@@ -1,5 +1,6 @@
 """
-Full backfill — recomputes and upserts scores for every session in f_readiness_screen_score.
+Full backfill — recomputes and upserts scores for every readiness session (v_readiness_screen_sessions,
+i.e. Readiness Screen v2 rebuilt from c3d).
 Run after any change to scoring logic (e.g. SCORE_SD_TO_POINTS, Z_CLAMP, metric lists).
 Sessions are processed in chronological order so that rolling baseline lookups are consistent.
 """
@@ -11,7 +12,7 @@ try:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT DISTINCT athlete_uuid, session_date"
-            " FROM public.f_readiness_screen_score"
+            " FROM public.v_readiness_screen_sessions"
             " ORDER BY session_date, athlete_uuid",
         )
         sessions = cur.fetchall()
@@ -24,7 +25,7 @@ for i, (athlete_uuid, session_date) in enumerate(sessions, 1):
     try:
         result = score_session(athlete_uuid, session_date)
         band      = result["band"]
-        composite = ult["composite_score"]
+        composite = result["composite_score"]
         tier      = result.get("scoring_tier", "?")
         print(f"[{i}/{len(sessions)}] {session_date}  {athlete_uuid[:8]}...  "
               f"{tier.ljust(12)}  {band.ljust(22)}  score={composite}")

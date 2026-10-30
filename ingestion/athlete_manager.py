@@ -230,17 +230,17 @@ def list_athletes_with_readiness():
                 SELECT DISTINCT da.athlete_uuid, da.name, da.age_group
                 FROM analytics.d_athletes da
                 WHERE EXISTS (
-                    SELECT 1 FROM public.f_readiness_screen_cmj WHERE athlete_uuid = da.athlete_uuid
+                    SELECT 1 FROM public.v_readiness_screen_cmj WHERE athlete_uuid = da.athlete_uuid
                     UNION ALL
-                    SELECT 1 FROM public.f_readiness_screen_ppu WHERE athlete_uuid = da.athlete_uuid
+                    SELECT 1 FROM public.v_readiness_screen_ppu WHERE athlete_uuid = da.athlete_uuid
                     UNION ALL
-                    SELECT 1 FROM public.f_readiness_screen_i   WHERE athlete_uuid = da.athlete_uuid
+                    SELECT 1 FROM public.v_readiness_screen_i   WHERE athlete_uuid = da.athlete_uuid
                     UNION ALL
-                    SELECT 1 FROM public.f_readiness_screen_y   WHERE athlete_uuid = da.athlete_uuid
+                    SELECT 1 FROM public.v_readiness_screen_y   WHERE athlete_uuid = da.athlete_uuid
                     UNION ALL
-                    SELECT 1 FROM public.f_readiness_screen_t   WHERE athlete_uuid = da.athlete_uuid
+                    SELECT 1 FROM public.v_readiness_screen_t   WHERE athlete_uuid = da.athlete_uuid
                     UNION ALL
-                    SELECT 1 FROM public.f_readiness_screen_ir90 WHERE athlete_uuid = da.athlete_uuid
+                    SELECT 1 FROM public.v_readiness_screen_ir90 WHERE athlete_uuid = da.athlete_uuid
                 )
                 ORDER BY da.name
                 """

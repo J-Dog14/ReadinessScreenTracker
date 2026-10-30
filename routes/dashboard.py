@@ -105,10 +105,10 @@ def _iso_series(cur, uuid: str) -> Dict[str, List[Dict]]:
     """
     out = {}
     for movement, table, legacy in (
-        ("I",    "f_readiness_screen_i",    True),
-        ("Y",    "f_readiness_screen_y",    False),
-        ("T",    "f_readiness_screen_t",    True),
-        ("IR90", "f_readiness_screen_ir90", False),
+        ("I",    "v_readiness_screen_i",    True),
+        ("Y",    "v_readiness_screen_y",    False),
+        ("T",    "v_readiness_screen_t",    True),
+        ("IR90", "v_readiness_screen_ir90", False),
     ):
         cur.execute(
             f"""
@@ -140,8 +140,8 @@ def _iso_series(cur, uuid: str) -> Dict[str, List[Dict]]:
 
 def _cmj_or_ppu(cur, uuid: str, kind: str):
     """Returns (timeseries_for_athlete, this_athlete_scatter_points, peer_scatter_points)."""
-    rs_table  = f"f_readiness_screen_{kind}"
-    ath_table = f"f_athletic_screen_{kind}"
+    rs_table  = f"v_readiness_screen_{kind}"   # Readiness Screen v2 views (rebuilt from c3d)
+    ath_table = f"v_athletic_screen_{kind}"    # Athletic Screen v2 views
     cur.execute(
         f"""
         SELECT session_date,
@@ -153,7 +153,7 @@ def _cmj_or_ppu(cur, uuid: str, kind: str):
                source_system
           FROM (
             SELECT session_date, jump_height, pp_w_per_kg,
-                   pp_forceplate, force_at_pp, vel_at_pp, source_system
+                   pp_forceplate, force_at_pp, vel_at_pp, 'readiness_screen'::text AS source_system
               FROM public.{rs_table}
              WHERE athlete_uuid = %s
             UNION ALL
@@ -263,9 +263,9 @@ def _score_history(cur, uuid: str) -> List[Dict]:
 
 
 def _power_curve_history(cur, uuid: str) -> Dict[str, List[Dict]]:
-    """Merges f_readiness_screen_power_curve with inline power columns from f_athletic_screen_cmj/ppu."""
+    """Merges v_readiness_screen_power_curve with inline power columns from v_athletic_screen_cmj/ppu."""
     out = {}
-    for movement, ath_table in (("CMJ", "f_athletic_screen_cmj"), ("PPU", "f_athletic_screen_ppu")):
+    for movement, ath_table in (("CMJ", "v_athletic_screen_cmj"), ("PPU", "v_athletic_screen_ppu")):
         cur.execute(
             f"""
             SELECT session_date,
@@ -278,7 +278,7 @@ def _power_curve_history(cur, uuid: str) -> Dict[str, List[Dict]]:
               FROM (
                 SELECT session_date, peak_power_w, rpd_max_w_per_s,
                        rise_slope_w_per_s AS rise_slope, fwhm_s, auc_j, decay_90_10_s
-                  FROM public.f_readiness_screen_power_curve
+                  FROM public.v_readiness_screen_power_curve
                  WHERE athlete_uuid = %s AND movement_type = %s
                 UNION ALL
                 SELECT session_date, peak_power_w, rpd_max_w_per_s,
@@ -333,7 +333,7 @@ def _grip_series(cur, uuid: str) -> List[Dict]:
 def _movement_strategy(cur, uuid: str) -> Dict[str, List[Dict]]:
     """Phase-analysis metrics per session (averaged across trials per day)."""
     out = {}
-    for kind, table in (("cmj", "f_readiness_screen_cmj"), ("ppu", "f_readiness_screen_ppu")):
+    for kind, table in (("cmj", "v_readiness_screen_cmj"), ("ppu", "v_readiness_screen_ppu")):
         cur.execute(
             f"""
             SELECT session_date,
@@ -373,7 +373,7 @@ def _movement_strategy(cur, uuid: str) -> Dict[str, List[Dict]]:
 def _intra_session_trials(cur, uuid: str) -> Dict[str, List[Dict]]:
     """Per-session individual trial values for CMJ and PPU (last 30 sessions)."""
     out = {}
-    for kind, table in (("cmj", "f_readiness_screen_cmj"), ("ppu", "f_readiness_screen_ppu")):
+    for kind, table in (("cmj", "v_readiness_screen_cmj"), ("ppu", "v_readiness_screen_ppu")):
         cur.execute(
             f"""
             SELECT session_date, trial_name,
